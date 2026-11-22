@@ -1,6 +1,6 @@
 # 3. Tests and repeatable examples
 
-**Run everything:** `uv run pytest -q` gives `307 passed, 18 skipped`. The 18 are integration tests that need real Postgres and Redis (CI; see `01_setup_and_run.md`).
+**Run everything:** `uv run pytest -q` gives `389 passed, 28 skipped`. The 28 are integration tests that need real Postgres and Redis (CI; see `01_setup_and_run.md`).
 
 **What the tests are, honestly:** the journey and failure tests run the *real* LangGraph graph, agent logic, harness, payment state machine, guards and checkpoint pause/resume. Only the outside world is replaced by in-memory fakes (the database, the gateway simulator, the model). They prove the behavior and the rules. They do not prove the SQL or the Azure services; that is what `tests/integration/` is for.
 
@@ -57,6 +57,33 @@ Step-by-step versions with the exact messages are in `docs/example_transcripts.m
 | Migration safety lint; post-deploy smoke test | `test_devops.py` |
 | MCP contract (the catalog equals what each server exposes) | `test_mcp_contract.py` |
 
+## Deploy-path checks (identities, roles, secrets)
+
+| What | Test | Proves |
+|---|---|---|
+| Per-service Postgres roles | `test_dbroles.py` | Each service gets only the access it needs (only the MCP servers touch the ledger, audit is append-only, the troubleshooter reads only the manual, the director and evaluator get nothing); grants are wiped and re-applied every deploy, so removed access does not linger; unsafe role names never reach SQL. |
+| Entra connection user | `test_dbroles.py::test_entra_connections_use_the_identity_name_as_the_postgres_user` | Each pod connects as its own identity, not a shared user. |
+| Terraform outputs to Helm | `test_helm_values_script.py` | Every service gets its own identity ids; a missing or blank output stops the deploy instead of shipping a pod that cannot sign in. |
+
+Checked outside pytest (and not as tests): `helm lint` and `helm template` render the chart, and the rendered output was inspected for hook order, secret mounts on every pod, and the generated identity values; `terraform validate` passes for both `infra/terraform` and `infra/bootstrap`.
+
+## Documents and uploads
+
+| Risk | Test | Expected behavior |
+|---|---|---|
+| Edited document leaves old text behind | `test_indexer_chain.py::test_an_edited_document_loses_its_old_text`, `integration/test_documents.py::test_an_edited_document_loses_its_old_text_in_the_real_database` | New chunk in, old chunk out; other documents untouched. |
+| A storage outage wipes the knowledge base | `test_documents_uploads.py::test_an_empty_listing_never_wipes_the_knowledge_base` | An empty listing deletes nothing. |
+| One bad document stops the batch | `test_a_bad_document_never_stops_the_batch` | Unsupported, oversized and non-UTF-8 files are skipped and reported. |
+| Hostile upload (renamed executable, double extension, wrong bytes) | `test_hostile_or_mismatched_files_are_rejected_with_a_safe_reason` | Rejected before storage, with a reason that names no internals. |
+| Path traversal in a filename | `test_filenames_are_reduced_to_a_safe_basename` | Reduced to a safe basename. |
+| Oversized upload | `test_an_oversized_upload_is_cut_off_with_413_before_it_is_fully_read` | Cut off while reading, 413. |
+| File used before it is scanned | `test_a_file_stays_quarantined_until_the_scanner_has_cleared_it` | Stays `PENDING_SCAN` until the scan says clean. |
+| Malware | `test_a_malicious_file_is_deleted_and_marked_rejected_but_its_record_is_kept` | File deleted, audit row kept. |
+| One customer reads another's file | `test_another_customers_upload_id_is_simply_not_found`, `test_status_and_list_are_private_to_the_customer` | Not found; lists are per customer. |
+| Upload flood | `test_the_daily_limit_is_429_and_per_customer` | 429 after the daily limit; other customers unaffected. |
+| Orphaned file when the database write fails | `test_if_the_record_cannot_be_saved_the_stored_file_is_removed` | The stored file is removed. |
+| Erasure request | `test_erasure_removes_files_and_rows_and_governance_reports_the_count` | The customer's files and rows are gone; other customers' remain. |
+
 ## Run your own checks
 
 ```bash
@@ -70,4 +97,4 @@ uv run python -m support_assistant.evaluation eval/retrieval_eval.example.json  
 
 - Live Azure services, the real payment gateway, and real model behavior (including the Agent Framework with a live model).
 - Real traffic: the load script exists (`loadtest.py`) but has not been run.
-- Anything the 18 integration tests cover, until CI runs them.
+- Anything the 28 integration tests cover, until CI runs them.

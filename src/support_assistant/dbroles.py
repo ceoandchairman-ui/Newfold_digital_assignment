@@ -39,7 +39,11 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
     "fat-backend": [
         ("SELECT", ["customers"]),
         ("SELECT, INSERT, UPDATE, DELETE", ["session_conversations", "customer_episodes"]),
+        # Customer upload records: accept, scan-status updates, and erasure/retention.
+        ("SELECT, INSERT, UPDATE, DELETE", ["customer_uploads"]),
     ],
+    # Mirrors the team's documents into the knowledge base: add new chunks, remove stale ones.
+    "indexer": [("SELECT, INSERT, DELETE", ["knowledge_base_chunks"])],
     # Graph-node retrieval and the audit trail.
     "orchestrator": [
         ("SELECT", ["knowledge_base_chunks"]),

@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     max_troubleshoot_turns: int = Field(3, ge=1)
     # Per-customer daily cap on estimated input tokens (E6-5). 0 disables the cap.
     daily_token_budget: int = Field(50_000, ge=0)
+    # --- Document storage (E2-2, E13). Private blob accounts, Entra auth, no keys. ----------------
+    # Team documents the indexer reads (trusted reference material).
+    docs_storage_account: str | None = None
+    docs_container: str = "knowledge-base"
+    # Files customers upload (untrusted: validated, malware-scanned, expiring).
+    uploads_storage_account: str | None = None
+    uploads_container: str = "customer-uploads"
+    upload_max_bytes: int = Field(10_000_000, ge=1)
+    upload_daily_limit: int = Field(10, ge=1, description="Uploads per customer per 24 h")
+
     # Model-driven tool calling in the Director (E4-3/E5-7). Off until verified end to end (E4-0).
     director_tool_calling: bool = False
     # Azure AI Content Safety Prompt Shields (E10-9). Unset = local pattern check only.

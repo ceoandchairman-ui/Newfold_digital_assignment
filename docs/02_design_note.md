@@ -27,6 +27,9 @@ flowchart LR
     ORCH -- "pay, after approval" --> MCP
 
     MCP --> PG[(Postgres + pgvector<br/>ledger, memory, audit, manual)]
+
+    TEAM([Team]) --> DOCS[(Blob: knowledge-base<br/>trusted)] --> IDX[indexer CronJob] --> PG
+    BE -- "validate, quarantine" --> UPL[(Blob: customer-uploads<br/>untrusted, scanned, expiring)]
     MCP --> SB[[Service Bus outbox]] --> WRK --> ACS[Azure Comms<br/>SMS / email]
     ORCH --> RC[(Redis: checkpoint<br/>NoEviction + AOF)]
     BE --> RK[(Redis: cache<br/>LRU)]
@@ -50,6 +53,15 @@ flowchart LR
 | **Two model tiers** (`gpt-4.1` for hard turns, `gpt-4.1-mini` for easy ones), routed by a deterministic rule with fallback. | Cost and latency. | The routing rule is a heuristic that needs tuning on real conversations. |
 | **OpenTelemetry end to end** (W3C trace context, collector with tail sampling and PII redaction). | One customer turn is one trace across the backend, orchestrator, agent, MCP server and database; payment, escalation and error traces are always kept. | Running a collector tier. |
 
+## Documents and uploads: two paths, deliberately kept apart
+
+| Path | Flow | Why it is built this way |
+|---|---|---|
+| **Team documents** | blob `knowledge-base` -> indexer -> pgvector | The knowledge base *mirrors* its source: an edited document replaces its old chunks and a deleted one is removed, otherwise the assistant would keep quoting corrected or withdrawn text. A listing that returns **no** documents deletes nothing, so a storage outage cannot wipe the knowledge base. |
+| **Customer uploads** | backend -> validate -> blob `customer-uploads` (quarantine) -> Defender scan tag -> released only when "No threats found" | The file is hostile until proven otherwise. Its real bytes must match its extension, its name is reduced to a safe basename, it lives under the customer's own prefix, and a malicious file is deleted (its audit row stays). |
+
+Decisions and costs: a customer's file is **never parsed or shown to a model**, because text inside a file can carry instructions (prompt injection). That keeps it safe but means the assistant cannot yet "read" a screenshot; it is stored for a human agent. Two storage accounts instead of one cost a little more and keep a trusted source and an untrusted drop box from ever sharing permissions.
+
 ## Edge cases handled (all tested)
 
 - **Not verified:** nothing runs. A wrong date of birth, an unknown phone and an ambiguous name all give the *same* answer, so accounts cannot be enumerated.
@@ -64,7 +76,8 @@ flowchart LR
 
 ## Limitations (stated plainly)
 
-1. **Nothing has run against real Azure, Postgres, Redis or a model.** The 307 unit tests use fakes. 18 integration tests will run against real Postgres and Redis only in CI, and have not run yet.
+0. **Document handling is only text and Markdown.** PDFs and images from the *team* are skipped (no parsing service is wired in), and a customer's PDF or image is stored, not understood. Malware scanning relies on Defender for Storage writing its result tag, which has not been seen on a real account.
+1. **Nothing has run against real Azure, Postgres, Redis or a model.** The 389 unit tests use fakes. 28 integration tests will run against real Postgres and Redis only in CI, and have not run yet.
 2. **The payment gateway is a stub.** The simulator proves the state machine under timeouts, declines and replays, but no real gateway is integrated.
 3. **The Agent Framework is checked against its API only**, not against a live model. Model-driven tool calling in the Director is off by default (`DIRECTOR_TOOL_CALLING`) until it has been run end to end.
 4. **Intent classification falls back to keywords**, and the model-tier routing is a heuristic.

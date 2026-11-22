@@ -18,12 +18,12 @@ Prerequisites: Python 3.12 and [`uv`](https://docs.astral.sh/uv/).
 git clone <repo> && cd ai-support-assistant
 uv sync --extra dev --prerelease=allow --python 3.12   # --prerelease: Microsoft Agent Framework ships pre-release deps
 
-uv run pytest -q                       # 307 passed, 18 skipped (the 18 are the integration tests)
+uv run pytest -q                       # 389 passed, 28 skipped (the 28 are the integration tests)
 uv run ruff check src tests scripts    # lint
 uv run mypy src                        # strict type check
 ```
 
-Expected: `307 passed, 18 skipped`. The 18 skips are the integration tests, which need a database (see B).
+Expected: `389 passed, 28 skipped`. The 28 skips are the integration tests, which need a database (see B).
 
 **See the main journeys run, with names:**
 
@@ -51,30 +51,56 @@ uv run pytest tests/integration -v
 
 ## C. Deploying to Azure
 
-One-time setup (these are decisions or access I did not have):
+**One-time setup** (about 15 minutes; everything after it is the pipeline):
 
-1. **Terraform state storage account:** create it, then fill in `infra/terraform/envs/dev.backend.hcl`.
-2. **Entra admin group:** set `pg_admin_object_id` in `envs/dev.tfvars`.
-3. **Embedder provider** (BGE-M3, 1024 dimensions) and its URL, and the region and Azure OpenAI quota.
-4. **GitHub environments:** `dev`, `production`, `plan-dev`, `plan-prod`, with Azure OIDC variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, `RESOURCE_GROUP`, `AKS_NAME`, `SMOKE_PHONE`, `SMOKE_DOB`) and required reviewers on `production`.
-5. **Key Vault secrets:** `database-url`, `redis-url`, `checkpoint-redis-url`, `tool-cache-redis-url`, `embedder-api-key`.
+1. **Bootstrap** (as an Azure Owner, once): `cd infra/bootstrap && terraform init && terraform apply -var github_repository=<owner/repo>`.
+   It creates the Terraform state storage, a shared container registry, and two GitHub OIDC identities (`plan`: read-only, `apply`: can deploy) with no stored secrets.
+2. **Copy its outputs:**
+   - `backend_config` into `infra/terraform/envs/{dev,prod}.backend.hcl`;
+   - `main_tfvars` into `envs/*.tfvars` (and set `pg_admin_object_id` there, an Entra group for Postgres admins);
+   - `github_variables` into GitHub: create the environments `dev`, `production`, `plan-dev`, `plan-prod`, set the variables (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, `AZURE_CLIENT_ID` per environment, `SMOKE_PHONE`, `SMOKE_DOB`), and add required reviewers on `production`.
+3. **One secret:** add `EMBEDDER_API_KEY` as a GitHub secret (it comes from the embedder provider).
+4. **Decisions** I did not have: the embedder provider URL, the region and Azure OpenAI quota (`envs/*.tfvars`), and the CODEOWNERS teams.
 
-Then merging to `main` runs `.github/workflows/deploy.yml`:
+**Then merging to `main` does everything.** Nothing is typed in by hand after step 3: Terraform creates the Key Vault secrets (addresses only, no passwords, since Postgres and Redis use Entra tokens), and the pipeline passes Terraform's outputs (identities, Key Vault, prefix) straight into Helm.
 
 ```
 build image -> sign + SBOM -> [plan] -> (approval) -> apply the reviewed plan
-   -> verify signature -> migrations -> helm upgrade --atomic -> smoke test -> dashboards
+   -> verify signature -> helm upgrade --atomic, in the PRIVATE cluster via `az aks command invoke`
+        pre-deploy hook:  migrations -> a Postgres role per service (least privilege) -> demo seed (dev only)
+   -> smoke test -> dashboards
 ```
 
-A failed smoke test rolls the release back and stops promotion to prod.
+A failed smoke test rolls the release back and stops promotion to prod. Secrets reach pods through the Key Vault CSI driver. The cluster API is private, so the runner never talks to it directly.
 
-**Seed data and try it:**
+**Try it** (the dev environment is seeded with the demo data, so C1002 owes bill B1005):
 
 ```bash
-python -m support_assistant.seed seed/example_seed.toml      # C1002 owes bill B1005, etc.
 python -m support_assistant.cli https://<dev-backend-host>   # verify, chat, approve a payment
 python -m support_assistant.loadtest https://<dev> +15550001 1990-05-01 50 10   # latency baseline
 ```
+
+> **Not yet run:** none of this has executed against a real subscription. Expect the first pipeline run to need fixes. The bootstrap, Terraform, chart and workflows have been validated (`terraform validate`, `helm lint` and render, workflow parsing) but not applied.
+
+## Documents and uploads (two different paths)
+
+| | **Team documents** (the support manual, policy) | **Customer uploads** (a screenshot, a PDF bill, a text file) |
+|---|---|---|
+| Lands in | private blob container `knowledge-base` | private blob container `customer-uploads` (separate account) |
+| Trust | trusted reference material | **untrusted**: validated, quarantined, malware-scanned |
+| Then | the `indexer` CronJob mirrors it into pgvector every 6 hours (and right after each deploy) | held for a human agent; **never given to a model** |
+| Retention | kept (versioned, soft delete) | deleted automatically after 30 days (configurable); removed on an erasure request |
+
+**Team uploads a document:** put `.md` or `.txt` files in the `knowledge-base` container (Azure portal, Storage Explorer or `az storage blob upload --auth-mode login`). The account is private, so reach it from a network listed in `docs_allowed_ip_ranges` (your office or VPN egress IPs) or from inside the VNet, and be in the Entra group set in `docs_writers_object_id`. Edited documents replace their old text; deleted documents are removed from the knowledge base at the next run. Trigger a run now with `kubectl -n support create job --from=cronjob/indexer indexer-now`. Only Markdown and text are indexed today; other files are skipped and reported.
+
+**A customer uploads a file** (a verified session is required):
+
+```bash
+curl -F session_id=<session> -F file=@screenshot.png https://<backend>/upload     # -> status PENDING_SCAN
+curl "https://<backend>/uploads/<id>?session_id=<session>"                         # -> CLEAN once scanned
+```
+
+Accepted: PNG, JPEG, PDF and UTF-8 text, up to 10 MB, 10 uploads per customer per day. The file's real bytes must match its extension.
 
 ## Configuration
 

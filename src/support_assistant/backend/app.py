@@ -7,11 +7,11 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -23,7 +23,12 @@ from support_assistant.content_safety import PromptShields, local_shield
 from support_assistant.context import compact_history, episode_context, summarize_session
 from support_assistant.db import make_pool
 from support_assistant.embeddings import HttpEmbedder
-from support_assistant.errors import AuthenticationError, ExternalServiceUnavailable, SupportError
+from support_assistant.errors import (
+    AuthenticationError,
+    ExternalServiceUnavailable,
+    SupportError,
+    UploadRejected,
+)
 from support_assistant.memory import SessionMemory
 from support_assistant.observability import (
     BUDGET_REFUSALS,
@@ -34,6 +39,7 @@ from support_assistant.observability import (
 from support_assistant.redis_factory import make_redis
 from support_assistant.services.episodes import save_episode, search_episodes
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
+from support_assistant.uploads import UploadService
 
 log = structlog.get_logger()
 VERIFIED_TTL_S = 1800
@@ -89,6 +95,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.s, app.state.pool, app.state.redis = s, pool, redis
     app.state.memory = SessionMemory(pool, redis, s.redis_window_size, s.redis_session_ttl_s)
     app.state.budget = TokenBudget(redis, s.daily_token_budget) if s.daily_token_budget else None
+    app.state.uploads = None
+    uploads_store = None
+    if s.uploads_storage_account:
+        from support_assistant.blobstore import AzureBlobStore
+
+        uploads_store = AzureBlobStore(s.uploads_storage_account, s.uploads_container)
+        app.state.uploads = UploadService(
+            pool, uploads_store, max_bytes=s.upload_max_bytes, daily_limit=s.upload_daily_limit
+        )
     app.state.shields = None
     if s.content_safety_endpoint:
         from azure.identity.aio import DefaultAzureCredential
@@ -117,6 +132,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.rewrite = build_rewrite_chain(s) if s.azure_openai_endpoint else None
     yield
     await app.state.http.aclose()
+    if uploads_store is not None:
+        await uploads_store.aclose()
     if app.state.shields is not None:
         await app.state.shields.aclose()
     if app.state.embedder is not None:
@@ -277,6 +294,50 @@ async def approve(body: ApproveBody) -> dict[str, Any]:
             customer_id, body.session_id, [{"role": "assistant", "content": result["reply"]}]
         )
     return result
+
+
+async def _read_limited(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in chunks and stop as soon as it is too big (never load a huge file)."""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise UploadRejected(f"the file is larger than {max_bytes // 1_000_000} MB", 413)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _uploads() -> UploadService:
+    svc: UploadService | None = getattr(app.state, "uploads", None)
+    if svc is None:
+        raise ExternalServiceUnavailable("uploads are not configured")
+    return svc
+
+
+@app.post("/upload")
+async def upload(
+    session_id: Annotated[str, Form(min_length=1)], file: Annotated[UploadFile, File()]
+) -> dict[str, Any]:
+    """A verified customer uploads a file (screenshot, PDF, text). It is quarantined until scanned."""
+    customer_id = await _verified_customer(session_id)
+    svc = _uploads()
+    data = await _read_limited(file, app.state.s.upload_max_bytes)
+    record = await svc.accept(customer_id, session_id, file.filename or "file", data)
+    return record.public()
+
+
+@app.get("/uploads")
+async def list_uploads(session_id: str) -> dict[str, Any]:
+    customer_id = await _verified_customer(session_id)
+    return {"uploads": [r.public() for r in await _uploads().list_for(customer_id)]}
+
+
+@app.get("/uploads/{upload_id}")
+async def upload_status(upload_id: str, session_id: str) -> dict[str, Any]:
+    customer_id = await _verified_customer(session_id)
+    record = await _uploads().status(customer_id, upload_id)
+    return record.public()
 
 
 @app.post("/end")

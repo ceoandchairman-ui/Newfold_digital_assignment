@@ -1,4 +1,5 @@
-"""The Terraform-to-Helm bridge fills in every identity, and refuses to deploy with a blank one."""
+"""The Terraform-to-Helm bridge fills in every identity and endpoint, and refuses to deploy with a
+blank one."""
 
 import importlib.util
 import json
@@ -14,7 +15,7 @@ assert _spec and _spec.loader
 hv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hv)
 
-WORKLOADS = [
+DEPLOYMENTS = [
     "fat-backend",
     "orchestrator",
     "agent-director",
@@ -22,8 +23,8 @@ WORKLOADS = [
     "agent-evaluator",
     "mcp-servers",
     "notification-worker",
-    "db-bootstrap",
 ]
+WORKLOADS = [*DEPLOYMENTS, "indexer", "db-bootstrap"]
 
 
 def outputs(**overrides):
@@ -34,24 +35,32 @@ def outputs(**overrides):
         "tenant_id": {"value": "tenant-1"},
         "csi_client_id": {"value": "csi-1"},
         "identity_prefix": {"value": "support-dev"},
+        "docs_storage_account": {"value": "stsupportdocsdev"},
+        "docs_container": {"value": "knowledge-base"},
+        "uploads_storage_account": {"value": "stsupportupldev"},
+        "uploads_container": {"value": "customer-uploads"},
+        "openai_endpoint": {"value": "https://oai-x.openai.azure.com/"},
+        "content_safety_endpoint": {"value": "https://cs-x.cognitiveservices.azure.com/"},
+        "servicebus_namespace": {"value": "sb-support-dev-abc12"},
     }
     out.update(overrides)
     return out
 
 
-def test_every_service_gets_its_own_client_and_object_id():
+def test_every_deployment_gets_its_own_client_and_object_id():
     v = hv.build_values(outputs(), "dev")
-    assert set(v["services"]) == set(WORKLOADS) - {"db-bootstrap"}
+    assert set(v["services"]) == set(DEPLOYMENTS)
     assert v["services"]["orchestrator"] == {
         "clientId": "cid-orchestrator",
         "objectId": "oid-orchestrator",
     }
 
 
-def test_the_bootstrap_identity_is_separate_from_the_services():
+def test_the_hook_and_job_identities_are_not_deployments():
     v = hv.build_values(outputs(), "dev")
     assert v["dbBootstrap"] == {"clientId": "cid-db-bootstrap", "objectId": "oid-db-bootstrap"}
-    assert "db-bootstrap" not in v["services"]  # it must never become a Deployment
+    assert v["jobIdentities"] == {"indexer": {"clientId": "cid-indexer", "objectId": "oid-indexer"}}
+    assert not {"db-bootstrap", "indexer"} & set(v["services"])  # never become Deployments
 
 
 def test_key_vault_prefix_and_environment_are_passed_through():
@@ -64,6 +73,26 @@ def test_key_vault_prefix_and_environment_are_passed_through():
     }
 
 
+def test_every_address_a_service_needs_is_generated_not_typed():
+    e = hv.build_values(outputs(), "dev")["endpoints"]
+    assert e == {
+        "AZURE_OPENAI_ENDPOINT": "https://oai-x.openai.azure.com/",
+        "CONTENT_SAFETY_ENDPOINT": "https://cs-x.cognitiveservices.azure.com/",
+        "SERVICEBUS_NAMESPACE_FQDN": "sb-support-dev-abc12.servicebus.windows.net",
+        "DOCS_STORAGE_ACCOUNT": "stsupportdocsdev",
+        "DOCS_CONTAINER": "knowledge-base",
+        "UPLOADS_STORAGE_ACCOUNT": "stsupportupldev",
+        "UPLOADS_CONTAINER": "customer-uploads",
+    }
+
+
+def test_the_endpoint_names_match_the_settings_the_services_actually_read():
+    from support_assistant.config import Settings
+
+    fields = {n.upper() for n in Settings.model_fields}
+    assert set(hv.build_values(outputs(), "dev")["endpoints"]) <= fields
+
+
 @pytest.mark.parametrize(
     "missing",
     [
@@ -72,6 +101,10 @@ def test_key_vault_prefix_and_environment_are_passed_through():
         "csi_client_id",
         "identity_prefix",
         "tenant_id",
+        "docs_storage_account",
+        "uploads_storage_account",
+        "openai_endpoint",
+        "servicebus_namespace",
     ],
 )
 def test_a_missing_terraform_output_stops_the_deploy(missing):
@@ -84,6 +117,8 @@ def test_a_missing_terraform_output_stops_the_deploy(missing):
 def test_an_empty_value_is_as_bad_as_a_missing_one():
     with pytest.raises(hv.MissingOutput):
         hv.build_values(outputs(key_vault_name={"value": ""}), "dev")
+    with pytest.raises(hv.MissingOutput):
+        hv.build_values(outputs(openai_endpoint={"value": ""}), "dev")
 
 
 def test_a_blank_identity_is_refused_rather_than_deployed():
@@ -93,9 +128,10 @@ def test_a_blank_identity_is_refused_rather_than_deployed():
         hv.build_values(outputs(workload_identity_client_ids={"value": ids}), "dev")
 
 
-def test_the_bootstrap_identity_must_exist():
-    ids = {w: f"cid-{w}" for w in WORKLOADS if w != "db-bootstrap"}
-    with pytest.raises(hv.MissingOutput, match="db-bootstrap"):
+@pytest.mark.parametrize("absent", ["db-bootstrap", "indexer"])
+def test_the_hook_and_indexer_identities_must_exist(absent):
+    ids = {w: f"cid-{w}" for w in WORKLOADS if w != absent}
+    with pytest.raises(hv.MissingOutput, match=absent):
         hv.build_values(outputs(workload_identity_client_ids={"value": ids}), "dev")
 
 
@@ -103,10 +139,8 @@ def test_the_cli_writes_json_helm_can_read_and_fails_on_bad_input(tmp_path, caps
     good = tmp_path / "tf.json"
     good.write_text(json.dumps(outputs()))
     assert hv.main([str(good), "dev"]) == 0
-    assert (
-        json.loads(capsys.readouterr().out)["services"]["fat-backend"]["clientId"]
-        == "cid-fat-backend"
-    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["services"]["fat-backend"]["clientId"] == "cid-fat-backend"
     bad = tmp_path / "bad.json"
     bad.write_text("{}")
     assert hv.main([str(bad), "dev"]) == 1 and hv.main([]) == 2

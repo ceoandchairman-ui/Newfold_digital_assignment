@@ -41,6 +41,9 @@ spec:
             {{- range $k, $v := merge (deepCopy ($svc.env | default dict)) $.Values.commonEnv }}
             - { name: {{ $k }}, value: {{ $v | quote }} }
             {{- end }}
+            {{- range $k, $v := $.Values.endpoints }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
             # Semantic-convention resource attributes (service.version / deployment.environment.name).
             - { name: SERVICE_VERSION, value: {{ $.Values.image.tag | quote }} }
             - { name: DEPLOYMENT_ENVIRONMENT, value: {{ $.Values.environment | quote }} }

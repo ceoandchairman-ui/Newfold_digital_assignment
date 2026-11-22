@@ -26,7 +26,8 @@ needs_db = pytest.mark.skipif(not DB_URL, reason="IT_DATABASE_URL not set (runs 
 needs_redis = pytest.mark.skipif(not REDIS_URL, reason="IT_REDIS_URL not set (runs in CI only)")
 
 TABLES = (
-    "audit_events, transaction_history, bill_line_items, bills, devices, lines, payment_methods, "
+    "customer_uploads, audit_events, transaction_history, bill_line_items, bills, devices, lines, "
+    "payment_methods, "
     "plans, session_conversations, customer_episodes, knowledge_base_chunks, customers"
 )
 

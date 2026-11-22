@@ -1,0 +1,59 @@
+# Knowledge-base indexer (E2-2): mirrors the team's documents (blob container `knowledge-base`) into
+# pgvector. Its own identity can only READ that container and write knowledge_base_chunks.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: indexer
+  namespace: {{ .Values.namespace }}
+  annotations:
+    azure.workload.identity/client-id: {{ .Values.jobIdentities.indexer.clientId | quote }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: indexer
+  namespace: {{ .Values.namespace }}
+spec:
+  schedule: {{ .Values.indexer.schedule | quote }}
+  concurrencyPolicy: Forbid          # never two runs at once
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: indexer
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: indexer
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+          containers:
+            - name: indexer
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              command: ["python", "-m", "support_assistant.indexer"]
+              envFrom:
+                - secretRef: { name: support-env }   # includes EMBEDDER_API_KEY
+              env:
+                {{- range $k, $v := .Values.commonEnv }}
+                - { name: {{ $k }}, value: {{ $v | quote }} }
+                {{- end }}
+                {{- range $k, $v := .Values.endpoints }}
+                - { name: {{ $k }}, value: {{ $v | quote }} }
+                {{- end }}
+                - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-indexer" }
+              resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+                - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }
+          volumes:
+            - { name: tmp, emptyDir: { sizeLimit: 100Mi } }
+            - name: secrets-store
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes: { secretProviderClass: support-env }

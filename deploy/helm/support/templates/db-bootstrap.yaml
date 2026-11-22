@@ -40,7 +40,8 @@ spec:
       containers:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          command: ["sh", "-c", "alembic upgrade head && python -m support_assistant.dbroles"]
+          # Dev only (seed.enabled): also load the demo data. The loader is idempotent.
+          command: ["sh", "-c", "alembic upgrade head && python -m support_assistant.dbroles{{ if .Values.seed.enabled }} && python -m support_assistant.seed seed/example_seed.toml{{ end }}"]
           envFrom:
             - secretRef: { name: support-env }
           env:
@@ -51,7 +52,7 @@ spec:
             - { name: EMBEDDING_DIM, value: {{ .Values.embeddingDim | quote }} }
             - { name: IDENTITY_PREFIX, value: {{ .Values.identityPrefix | quote }} }
             - name: DB_PRINCIPALS
-              value: "{{- $first := true -}}{{- range $name, $svc := .Values.services -}}{{- if $svc.objectId -}}{{- if not $first }},{{ end -}}{{ $name }}={{ $svc.objectId }}{{- $first = false -}}{{- end -}}{{- end -}}"
+              value: "{{- $all := merge (deepCopy .Values.services) (deepCopy .Values.jobIdentities) -}}{{- $first := true -}}{{- range $name, $svc := $all -}}{{- if $svc.objectId -}}{{- if not $first }},{{ end -}}{{ $name }}={{ $svc.objectId }}{{- $first = false -}}{{- end -}}{{- end -}}"
           resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
           volumeMounts:

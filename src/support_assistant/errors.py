@@ -75,6 +75,18 @@ class ConflictError(SupportError):
     customer_message = "That action isn't possible in the current state."
 
 
+class UploadRejected(SupportError):
+    """A customer file was refused. The reason is safe to show: it never names internals."""
+
+    code = "upload_rejected"
+    http_status = 422
+
+    def __init__(self, reason: str, http_status: int = 422) -> None:
+        super().__init__(reason)
+        self.http_status = http_status
+        self.customer_message = f"I can't accept that file: {reason}"
+
+
 class InvariantViolation(SupportError):
     """A model or service broke a rule the system guarantees (E4-8). Fail closed and escalate."""
 

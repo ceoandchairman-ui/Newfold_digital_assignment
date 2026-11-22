@@ -14,9 +14,14 @@ from support_assistant.db import Pool
 
 
 async def erase_customer_memory(
-    pool: Pool, redis_clients: list[Any], customer_id: str
+    pool: Pool, redis_clients: list[Any], customer_id: str, uploads: Any | None = None
 ) -> dict[str, int]:
-    """Delete a customer's conversations, episodes and cached copies. Returns what was removed."""
+    """Delete a customer's conversations, episodes, uploaded files and cached copies.
+
+    `uploads` is an UploadService; when given, the customer's files are removed from blob storage
+    first (a row is deleted only after its file is), and the count is included in the result.
+    """
+    uploaded = await uploads.erase_customer(customer_id) if uploads is not None else None
     async with pool.connection() as conn:
         async with conn.transaction():
             cur = await conn.execute(
@@ -35,7 +40,10 @@ async def erase_customer_memory(
         for pattern in (f"sess:{customer_id}:*", f"tool:{customer_id}"):
             async for key in client.scan_iter(match=pattern):
                 cache_keys += await client.delete(key)
-    return {"sessions": sessions, "episodes": episodes, "cache_keys": cache_keys}
+    result = {"sessions": sessions, "episodes": episodes, "cache_keys": cache_keys}
+    if uploaded is not None:
+        result["uploads"] = uploaded
+    return result
 
 
 async def prune_sessions(pool: Pool, older_than_days: int) -> int:

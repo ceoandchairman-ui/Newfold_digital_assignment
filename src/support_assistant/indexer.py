@@ -7,7 +7,14 @@ Idempotent: chunks are keyed by sha256(heading path + content), so re-running on
 changed text. We keep our own table (hash, model/version columns, tsvector for hybrid search), so
 the write step is plain SQL rather than a LangChain vector-store class.
 
-Run as a Kubernetes Job:  python -m support_assistant.indexer /data/knowledge_base.md
+The knowledge base MIRRORS the source: when a document is edited, its old chunks are removed; when a
+document is deleted from the source, all its chunks are removed. Otherwise the assistant would keep
+quoting text that was corrected or withdrawn. A safety guard stops a failed or empty listing from
+wiping everything (see `index_source`).
+
+Run as a Kubernetes CronJob (reads the `knowledge-base` blob container):
+    python -m support_assistant.indexer                # DOCS_STORAGE_ACCOUNT + DOCS_CONTAINER
+    python -m support_assistant.indexer ./some/folder  # a local folder or file (dev, job images)
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from pgvector.psycopg import register_vector_async
 
 from support_assistant.config import get_settings
 from support_assistant.db import Pool, make_pool
+from support_assistant.docsource import DocumentSource, LocalDirSource, StoreDocumentSource
 from support_assistant.embeddings import HttpEmbedder
 from support_assistant.embeddings_lc import LcEmbeddings
 
@@ -108,7 +116,14 @@ def build_index_chain(
                             version,
                         ),
                     )
-        return {"added": len(fresh), "total": len(inp["chunks"])}
+                # Mirror the document: drop this source's chunks that are no longer in its text.
+                keep = [c.digest for c in inp["chunks"]]
+                cur = await conn.execute(
+                    "DELETE FROM knowledge_base_chunks WHERE source = %s AND NOT (content_hash = ANY(%s))",
+                    (inp["source"], keep),
+                )
+                removed = cur.rowcount
+        return {"added": len(fresh), "total": len(inp["chunks"]), "removed": removed}
 
     return (
         RunnableLambda(split)
@@ -118,7 +133,46 @@ def build_index_chain(
     )
 
 
-async def _main(path: str) -> None:
+@dataclass(frozen=True)
+class IndexReport:
+    documents: int
+    chunks_added: int
+    chunks_removed: int
+    sources_removed: int
+    skipped: dict[str, str]
+
+
+async def index_source(
+    pool: Pool, embeddings: LcEmbeddings, source: DocumentSource, model: str, version: str = "1"
+) -> IndexReport:
+    """Index every document in `source` and make the knowledge base match it.
+
+    Safety: if the source yields NO documents, nothing is deleted. An empty or failed listing is
+    far more likely a storage problem than an intent to erase the whole knowledge base.
+    """
+    loaded = await source.load()
+    chain = build_index_chain(pool, embeddings, model, version)
+    added = removed = 0
+    for name in loaded.names:
+        result = await chain.ainvoke({"source": name, "text": loaded.documents[name]})
+        added += result["added"]
+        removed += result["removed"]
+
+    sources_removed = 0
+    if loaded.names:  # never prune on an empty listing
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    "DELETE FROM knowledge_base_chunks WHERE NOT (source = ANY(%s))",
+                    (loaded.names,),
+                )
+                sources_removed = cur.rowcount
+    return IndexReport(len(loaded.names), added, removed, sources_removed, loaded.skipped)
+
+
+async def _main(path: str | None) -> int:
+    from support_assistant.blobstore import AzureBlobStore
+
     s = get_settings()
     key = os.environ.get("EMBEDDER_API_KEY", "")
 
@@ -128,19 +182,33 @@ async def _main(path: str) -> None:
     embedder = HttpEmbedder(
         s.embedder_url, s.embedding_model, dim=s.embedding_dim, token_provider=token
     )
+    store: AzureBlobStore | None = None
+    source: DocumentSource
+    if path:
+        source = LocalDirSource(Path(path))
+    elif s.docs_storage_account:
+        store = AzureBlobStore(s.docs_storage_account, s.docs_container)
+        source = StoreDocumentSource(store)
+    else:
+        print("give a path, or set DOCS_STORAGE_ACCOUNT", file=sys.stderr)
+        return 2
     pool = make_pool(s)
     await pool.open()
     try:
-        chain = build_index_chain(pool, LcEmbeddings(embedder), s.embedding_model)
-        file = Path(path)
-        result = await chain.ainvoke(
-            {"source": file.name, "text": file.read_text(encoding="utf-8")}
+        report = await index_source(pool, LcEmbeddings(embedder), source, s.embedding_model)
+        print(
+            f"{report.documents} documents: +{report.chunks_added} chunks, "
+            f"-{report.chunks_removed} stale, -{report.sources_removed} from deleted documents"
         )
-        print(f"indexed {result['added']} new of {result['total']} chunks")
+        for name, why in report.skipped.items():
+            print(f"skipped {name}: {why}")
+        return 0
     finally:
         await embedder.aclose()
         await pool.close()
+        if store is not None:
+            await store.aclose()
 
 
 if __name__ == "__main__":
-    asyncio.run(_main(sys.argv[1]))
+    sys.exit(asyncio.run(_main(sys.argv[1] if len(sys.argv) > 1 else None)))

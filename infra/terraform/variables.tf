@@ -164,3 +164,29 @@ variable "acr_resource_group_name" {
   type        = string
   description = "Resource group of the shared ACR. Output `acr_resource_group` of infra/bootstrap."
 }
+
+# --- Document storage (E2-2) -------------------------------------------------------
+variable "docs_writers_object_id" {
+  type        = string
+  default     = ""
+  description = "Entra group allowed to upload documents to the knowledge-base container. Empty = none."
+}
+
+# --- Customer uploads (E13) ---------------------------------------------------------
+variable "upload_retention_days" {
+  type        = number
+  default     = 30
+  description = "Customer-uploaded files are deleted after this many days. Confirm with compliance (E5-8)."
+}
+
+variable "upload_scan_cap_gb" {
+  type        = number
+  default     = 100
+  description = "Monthly cap (GB) on malware scanning of uploads, to bound cost."
+}
+
+variable "docs_allowed_ip_ranges" {
+  type        = list(string)
+  default     = []
+  description = "Public IPs or CIDR ranges allowed to reach the knowledge-base storage (the team's office/VPN egress). Empty = private endpoint only."
+}

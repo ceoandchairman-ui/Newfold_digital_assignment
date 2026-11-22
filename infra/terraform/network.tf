@@ -74,6 +74,7 @@ locals {
     keyvault   = "privatelink.vaultcore.azure.net"
     servicebus = "privatelink.servicebus.windows.net"
     cognitive  = "privatelink.cognitiveservices.azure.com"
+    blob       = "privatelink.blob.core.windows.net"
   }
 }
 

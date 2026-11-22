@@ -5,7 +5,7 @@ description = "Enterprise MCP multi-agent support assistant (LangGraph + MAF, Po
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "langgraph>=1.2,<2",  # upper bounds: a new major must be a deliberate upgrade
+    "langgraph>=1.2,<2", # upper bounds: a new major must be a deliberate upgrade
     # Microsoft Agent Framework (D8): the agent layer in agent services. Pre-release; confirmed in the E4-0 spike.
     # Only the parts we import. The `agent-framework` meta-package also pulls every connector
     # (Anthropic, Bedrock, Gemini, Mistral, Ollama, Mem0, Qdrant, Azure Functions...), which bloats
@@ -36,13 +36,15 @@ dependencies = [
     "sqlalchemy>=2.0",
     "opentelemetry-sdk>=1.26",
     "azure-monitor-opentelemetry>=1.6",
-    "langgraph-checkpoint-redis>=0.6,<0.7",  # 0.x: minors may break
+    "langgraph-checkpoint-redis>=0.6,<0.7", # 0.x: minors may break
     "opentelemetry-exporter-otlp-proto-http>=1.30",
     "opentelemetry-instrumentation-fastapi>=0.51b0",
     "opentelemetry-instrumentation-httpx>=0.51b0",
     "opentelemetry-instrumentation-psycopg>=0.51b0",
     "opentelemetry-instrumentation-redis>=0.51b0",
     "opentelemetry-instrumentation-asgi>=0.51b0",
+    "azure-storage-blob>=12.19,<13",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

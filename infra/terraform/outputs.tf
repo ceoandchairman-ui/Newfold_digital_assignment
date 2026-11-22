@@ -67,3 +67,20 @@ output "csi_client_id" {
 output "identity_prefix" {
   value = local.name
 }
+
+# --- Document landing zone: consumed by scripts/helm_values_from_terraform.py ------------------
+output "docs_storage_account" {
+  value = azurerm_storage_account.docs.name
+}
+
+output "docs_container" {
+  value = azurerm_storage_container.knowledge_base.name
+}
+
+output "uploads_storage_account" {
+  value = azurerm_storage_account.uploads.name
+}
+
+output "uploads_container" {
+  value = azurerm_storage_container.customer_uploads.name
+}

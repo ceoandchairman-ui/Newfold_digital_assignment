@@ -130,7 +130,25 @@ dbBootstrap:
   clientId: ""    # terraform output workload_identity_client_ids["db-bootstrap"]
   objectId: ""
 
+# Load seed/example_seed.toml as part of the pre-deploy hook. The pipeline turns this on for dev only.
+seed:
+  enabled: false
+
 # Refuse unsigned images in this namespace (Kyverno + cosign keyless). Requires Kyverno installed.
 signing:
   enforce: false
   githubRepo: "REPLACE-org/ai-support-assistant"   # the repository whose workflow signs the image
+
+# Jobs (CronJobs) that run as their own workload identity. Filled from Terraform outputs.
+jobIdentities:
+  indexer: { clientId: "", objectId: "" }
+
+# Indexes the team's documents from the knowledge-base blob container into pgvector. A change to a
+# document is picked up at the next run; trigger one by hand with:
+#   kubectl -n support create job --from=cronjob/indexer indexer-now
+indexer:
+  schedule: "0 */6 * * *"
+
+# Settings that are addresses, delivered to every pod as environment variables. Generated from
+# Terraform outputs (scripts/helm_values_from_terraform.py); the pipeline adds EMBEDDER_URL.
+endpoints: {}

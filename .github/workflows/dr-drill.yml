@@ -1,0 +1,71 @@
+# Disaster-recovery drill (E10-17, E11-A10): restore Postgres to a point in time, into a NEW server,
+# and time it against the recovery-time target (docs/disaster_recovery.md: 1 hour). Runs monthly
+# in dev. It never touches the live server, and always deletes the drill server afterwards.
+#
+# It proves the restore itself works and measures how long it takes. It does not inspect the
+# restored data: that needs network access to the private server, which a runner does not have.
+name: dr-drill
+on:
+  schedule:
+    - cron: "0 4 1 * *"   # 04:00 UTC on the 1st of every month
+  workflow_dispatch:
+    inputs:
+      minutes_ago:
+        description: "Restore to this many minutes in the past"
+        default: "15"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RTO_MINUTES: "60"            # the proposed recovery-time target
+  RESOURCE_GROUP: rg-support-dev
+
+jobs:
+  postgres-restore:
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 120
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Find the live server and its network settings
+        run: |
+          SRC="$(az postgres flexible-server list -g "$RESOURCE_GROUP" --query "[?starts_with(name,'pg-support-dev')].name | [0]" -o tsv)"
+          [ -n "$SRC" ] || { echo "no source server found"; exit 1; }
+          SUBNET="$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$SRC" --query network.delegatedSubnetResourceId -o tsv)"
+          DNS="$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$SRC" --query network.privateDnsZoneArmResourceId -o tsv)"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+          echo "SUBNET=$SUBNET" >> "$GITHUB_ENV"
+          echo "DNS=$DNS" >> "$GITHUB_ENV"
+          echo "DRILL=drill-$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
+      - name: Restore to a new server and time it
+        run: |
+          AGO="${{ github.event.inputs.minutes_ago || '15' }}"
+          WHEN="$(date -u -d "${AGO} minutes ago" +%Y-%m-%dT%H:%M:%SZ)"
+          START="$(date +%s)"
+          az postgres flexible-server restore --resource-group "$RESOURCE_GROUP" --name "$DRILL" \
+            --source-server "$SRC" --restore-time "$WHEN" --subnet "$SUBNET" --private-dns-zone "$DNS"
+          STATE="$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$DRILL" --query state -o tsv)"
+          ELAPSED=$(( ($(date +%s) - START) / 60 ))
+          {
+            echo "### Postgres restore drill"
+            echo "- Source: \`$SRC\`, restored to \`$WHEN\` as \`$DRILL\`"
+            echo "- State: **$STATE**"
+            echo "- Time to a usable server: **${ELAPSED} min** (target: ${RTO_MINUTES} min)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$STATE" = "Ready" ] || { echo "restored server is not Ready ($STATE)"; exit 1; }
+          [ "$ELAPSED" -le "$RTO_MINUTES" ] || { echo "restore took ${ELAPSED} min, over the ${RTO_MINUTES} min target"; exit 1; }
+
+      # Always remove the drill server, even if the restore failed, and only servers named drill-*.
+      - name: Delete the drill server
+        if: always()
+        run: |
+          case "${DRILL:-}" in drill-*) ;; *) echo "no drill server to delete"; exit 0;; esac
+          az postgres flexible-server delete --resource-group "$RESOURCE_GROUP" --name "$DRILL" --yes || true
