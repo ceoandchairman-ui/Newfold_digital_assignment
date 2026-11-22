@@ -153,3 +153,14 @@ variable "slo_turn_p95_ms" {
   default     = 8000
   description = "p95 customer-turn latency SLO in milliseconds (model calls dominate)."
 }
+
+# --- Shared container registry (created by infra/bootstrap) ----------------------
+variable "acr_name" {
+  type        = string
+  description = "Name of the shared ACR. Output `acr_name` of infra/bootstrap."
+}
+
+variable "acr_resource_group_name" {
+  type        = string
+  description = "Resource group of the shared ACR. Output `acr_resource_group` of infra/bootstrap."
+}

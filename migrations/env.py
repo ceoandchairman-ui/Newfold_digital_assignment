@@ -29,7 +29,10 @@ def _connect_args() -> dict[str, str]:
     from azure.identity import DefaultAzureCredential
 
     token = DefaultAzureCredential().get_token(POSTGRES_ENTRA_SCOPE).token
-    return {"password": token, "sslmode": "require"}
+    args = {"password": token, "sslmode": "require"}
+    if user := os.environ.get("DATABASE_ENTRA_USER"):
+        args["user"] = user  # the identity's name; Postgres maps it to the Entra principal
+    return args
 
 
 def run_migrations_online() -> None:

@@ -30,7 +30,16 @@ spec:
                 {{- range $k, $v := .Values.commonEnv }}
                 - { name: {{ $k }}, value: {{ $v | quote }} }
                 {{- end }}
+                - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-fat-backend" }
               resources: {{ toJson .Values.resources }}
+              volumeMounts:
+                - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }
+          volumes:
+            - name: secrets-store
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes: { secretProviderClass: support-env }
 {{- range $name, $svc := .Values.services }}
 {{- if $svc.ports }}
 ---

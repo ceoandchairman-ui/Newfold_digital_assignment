@@ -12,3 +12,7 @@ openai_deployments = {
   "chat-small"          = { model_name = "gpt-4.1-mini", model_version = "2025-04-14", capacity_k = 50 }
   "chat-evaluator"      = { model_name = "gpt-4.1-mini", model_version = "2025-04-14", capacity_k = 30 }
 }
+
+# From infra/bootstrap outputs.
+acr_name                = "REPLACE_ACR_NAME"
+acr_resource_group_name = "rg-support-shared"

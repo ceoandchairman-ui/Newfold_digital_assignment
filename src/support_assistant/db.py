@@ -36,14 +36,19 @@ def entra_token_provider() -> TokenProvider:  # pragma: no cover - needs Azure i
     return token
 
 
-def connection_kwargs(token_provider: TokenProvider | None) -> Any:
-    """Static kwargs, or an async callable that adds a fresh token for each new connection."""
+def connection_kwargs(token_provider: TokenProvider | None, user: str | None = None) -> Any:
+    """Static kwargs, or an async callable that adds a fresh token for each new connection.
+
+    Under Entra auth the Postgres role is the identity's name, which differs per service, so it is
+    supplied here (DATABASE_ENTRA_USER) rather than baked into the shared DATABASE_URL.
+    """
     base: dict[str, Any] = {"row_factory": dict_row, "autocommit": False}
     if token_provider is None:
         return base
 
     async def with_token() -> dict[str, Any]:
-        return {**base, "password": await token_provider(), "sslmode": "require"}
+        extra = {"user": user} if user else {}
+        return {**base, **extra, "password": await token_provider(), "sslmode": "require"}
 
     return with_token
 
@@ -61,7 +66,7 @@ def make_pool(settings: Settings, token_provider: TokenProvider | None = None) -
             timeout=settings.db_pool_timeout_s,
             # Recycle connections before their token could matter (tokens last ~60 minutes).
             max_lifetime=45 * 60,
-            kwargs=connection_kwargs(token_provider),
+            kwargs=connection_kwargs(token_provider, settings.database_entra_user),
             open=False,
         ),
     )

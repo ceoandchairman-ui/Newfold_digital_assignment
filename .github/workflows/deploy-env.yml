@@ -1,7 +1,12 @@
 # One environment's deployment, called by deploy.yml (E10-14, E11-A3/A5/A8, E12-B5).
-#   plan    : Terraform plan saved as an artifact (no approval needed to look at it)
-#   apply   : gated by the environment's required reviewers; applies EXACTLY the saved plan,
-#             then migrations, collector secret, Helm, smoke test, dashboards, release annotation.
+#   plan  : Terraform plan saved as an artifact (visible before any approval)
+#   apply : gated by the environment's required reviewers; applies EXACTLY the saved plan, then
+#           deploys with Helm. Everything the chart needs comes from Terraform's outputs.
+#
+# The AKS API server is private, so kubectl/helm run INSIDE the cluster through
+# `az aks command invoke` (scripts/aks_invoke.sh), not from the runner.
+# Migrations and Postgres roles are a Helm pre-install/pre-upgrade hook (db-bootstrap.yaml), run as
+# the db-bootstrap identity BEFORE the new pods start, so the first deploy works too.
 name: deploy-env
 on:
   workflow_call:
@@ -53,7 +58,9 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      IMAGE_REPO: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant
       IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant:${{ inputs.tag }}
+      ENFORCE_SIGNING: ${{ vars.ENFORCE_SIGNING || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -73,6 +80,17 @@ jobs:
           terraform init -input=false -backend-config="envs/${TF_ENV}.backend.hcl"
           terraform apply -input=false tfplan
 
+      - name: Read Terraform outputs and generate the Helm values
+        working-directory: infra/terraform
+        run: |
+          terraform output -json > ../../tf-outputs.json
+          echo "RESOURCE_GROUP=$(terraform output -raw resource_group)" >> "$GITHUB_ENV"
+          echo "AKS_NAME=$(terraform output -raw aks_name)" >> "$GITHUB_ENV"
+          echo "GRAFANA_NAME=$(terraform output -raw grafana_name)" >> "$GITHUB_ENV"
+          # Stops here if any identity or Key Vault output is missing or blank.
+          python3 ../../scripts/helm_values_from_terraform.py ../../tf-outputs.json "${TF_ENV}" \
+            > ../../values.generated.json
+
       - name: Verify the image signature before deploying it (E11-A1)
         run: |
           curl -sSfL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o cosign
@@ -82,67 +100,43 @@ jobs:
             --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
 
-      - uses: azure/setup-kubectl@v4
-      - uses: azure/setup-helm@v4
-      - name: Cluster credentials
+      - name: Bundle the chart and values for the in-cluster helm run
         run: |
-          az aks get-credentials --resource-group "${{ vars.RESOURCE_GROUP }}" \
-            --name "${{ vars.AKS_NAME }}" --overwrite-existing
-          kubelogin convert-kubeconfig -l azurecli
+          mkdir bundle
+          cp -r deploy/helm/support bundle/support
+          cp values.generated.json bundle/values.generated.json
+          chmod +x scripts/aks_invoke.sh
 
-      - name: Collector secret (App Insights connection string from Terraform)
-        working-directory: infra/terraform
+      - name: Install Kyverno (only when image-signature enforcement is on)
+        if: env.ENFORCE_SIGNING == 'true'
+        working-directory: bundle
         run: |
-          CS="$(terraform output -raw appinsights_connection_string)"
-          kubectl -n support create secret generic otel-azuremonitor \
-            --from-literal=connection-string="$CS" --dry-run=client -o yaml | kubectl apply -f -
+          ../scripts/aks_invoke.sh "helm repo add kyverno https://kyverno.github.io/kyverno/ && helm repo update && helm upgrade --install kyverno kyverno/kyverno --namespace kyverno --create-namespace --version 3.3.4 --wait --timeout 8m"
 
-      # Migrations run as a one-off pod inside the VNet (the database is private), using the
-      # image about to be deployed. EMBEDDING_DIM must match the embedder (D3).
-      - name: Database migrations
+      - name: Helm upgrade (the pre-deploy hook migrates the database and creates its roles)
+        working-directory: bundle
         run: |
-          NAME="migrate-${{ inputs.tag }}"
-          kubectl -n support run "$NAME" --rm -i --restart=Never --image "$IMAGE" \
-            --overrides="{\"metadata\":{\"labels\":{\"azure.workload.identity/use\":\"true\"}},
-              \"spec\":{\"serviceAccountName\":\"fat-backend\",\"containers\":[{\"name\":\"$NAME\",
-              \"image\":\"$IMAGE\",\"args\":[\"alembic\",\"upgrade\",\"head\"],
-              \"envFrom\":[{\"secretRef\":{\"name\":\"support-env\"}}],
-              \"env\":[{\"name\":\"EMBEDDING_DIM\",\"value\":\"1024\"},
-                       {\"name\":\"DATABASE_ENTRA_AUTH\",\"value\":\"true\"}]}]}}"
-
-      - name: Helm upgrade
-        run: |
-          helm upgrade --install support deploy/helm/support \
-            --namespace support --create-namespace --wait --timeout 10m --atomic \
-            --set image.repository="${{ vars.ACR_NAME }}.azurecr.io/support-assistant" \
-            --set image.tag="${{ inputs.tag }}" \
-            --set environment="${TF_ENV}"
+          ../scripts/aks_invoke.sh "helm upgrade --install support ./support --namespace support --create-namespace --wait --timeout 15m --atomic -f values.generated.json --set image.repository=${IMAGE_REPO} --set image.tag=${{ inputs.tag }} --set signing.enforce=${ENFORCE_SIGNING} --set signing.githubRepo=${{ github.repository }}" --file .
 
       - name: Smoke test (blocks promotion on failure)
         run: |
-          kubectl -n support run "smoke-${{ inputs.tag }}" --rm -i --restart=Never \
-            --labels app=smoke-test --image "$IMAGE" \
-            --env SMOKE_PHONE="${{ vars.SMOKE_PHONE }}" --env SMOKE_DOB="${{ vars.SMOKE_DOB }}" \
-            -- python -m support_assistant.smoke
+          scripts/aks_invoke.sh "kubectl -n support run smoke-${{ inputs.tag }} --rm -i --restart=Never --labels app=smoke-test --image ${IMAGE} --env SMOKE_PHONE=${{ vars.SMOKE_PHONE }} --env SMOKE_DOB=${{ vars.SMOKE_DOB }} -- python -m support_assistant.smoke"
 
       - name: Roll back on a failed smoke test
         if: failure()
-        run: helm rollback support --namespace support --wait || true
+        run: scripts/aks_invoke.sh "helm rollback support --namespace support --wait" || true
 
       - name: Dashboards as code
-        working-directory: infra/terraform
         run: |
           az extension add --name amg --only-show-errors
-          az grafana dashboard import --name "$(terraform output -raw grafana_name)" \
-            --resource-group "${{ vars.RESOURCE_GROUP }}" \
-            --definition ../../deploy/grafana/support-overview.json --overwrite true
+          az grafana dashboard import --name "$GRAFANA_NAME" --resource-group "$RESOURCE_GROUP" \
+            --definition deploy/grafana/support-overview.json --overwrite true
 
       - name: Release annotation (deploy marker on dashboards and traces)
-        working-directory: infra/terraform
         run: |
           echo "Deployed ${{ inputs.tag }} to ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
           az rest --method put \
             --url "https://management.azure.com$(az monitor app-insights component show \
-              --app "appi-support-${TF_ENV}" -g "${{ vars.RESOURCE_GROUP }}" --query id -o tsv)/Annotations?api-version=2015-05-01" \
+              --app "appi-support-${TF_ENV}" -g "$RESOURCE_GROUP" --query id -o tsv)/Annotations?api-version=2015-05-01" \
             --body "{\"Id\":\"$(uuidgen)\",\"AnnotationName\":\"${{ inputs.tag }}\",\"EventTime\":\"$(date -u +%FT%TZ)\",\"Category\":\"Deployment\"}" \
             || echo "annotation skipped (non-blocking)"

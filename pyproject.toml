@@ -7,7 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
     "langgraph>=1.2,<2",  # upper bounds: a new major must be a deliberate upgrade
     # Microsoft Agent Framework (D8): the agent layer in agent services. Pre-release; confirmed in the E4-0 spike.
-    "agent-framework>=1.22,<2",
+    # Only the parts we import. The `agent-framework` meta-package also pulls every connector
+    # (Anthropic, Bedrock, Gemini, Mistral, Ollama, Mem0, Qdrant, Azure Functions...), which bloats
+    # the image by hundreds of MB and adds vulnerability findings for code we never run.
+    "agent-framework-core>=1.22,<2",
+    "agent-framework-openai>=1.17,<2",
     # Chains: fat-backend query rewrite and LangGraph nodes that call outside the agent harness (not agent services).
     "langchain-core>=1.8,<2",
     "langchain-openai>=1.8,<2",

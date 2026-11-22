@@ -117,3 +117,20 @@ otel:
   resources:
     requests: { cpu: 200m, memory: 256Mi }
     limits: { memory: 1Gi }
+
+# `id-<identityPrefix>-<service>` is each workload identity's name AND its Postgres role name.
+# Terraform output `identity_prefix` (support-dev / support-prod); set by the pipeline.
+identityPrefix: support-dev
+
+# Must match the embedder (D3): migration 0002 sizes vector(N) from it.
+embeddingDim: "1024"
+
+# Runs before every install/upgrade as a Postgres Entra admin: migrations, then roles and grants.
+dbBootstrap:
+  clientId: ""    # terraform output workload_identity_client_ids["db-bootstrap"]
+  objectId: ""
+
+# Refuse unsigned images in this namespace (Kyverno + cosign keyless). Requires Kyverno installed.
+signing:
+  enforce: false
+  githubRepo: "REPLACE-org/ai-support-assistant"   # the repository whose workflow signs the image

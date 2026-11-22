@@ -44,17 +44,31 @@ spec:
             # Semantic-convention resource attributes (service.version / deployment.environment.name).
             - { name: SERVICE_VERSION, value: {{ $.Values.image.tag | quote }} }
             - { name: DEPLOYMENT_ENVIRONMENT, value: {{ $.Values.environment | quote }} }
+            # Postgres role under Entra auth = this pod's identity name (dbroles.py creates it).
+            - { name: DATABASE_ENTRA_USER, value: "id-{{ $.Values.identityPrefix }}-{{ $name }}" }
             {{- with $svc.objectId }}
             # Redis username under Entra auth (terraform output workload_principal_ids).
             - { name: REDIS_ENTRA_OBJECT_ID, value: {{ . | quote }} }
             {{- end }}
           resources: {{ toJson $.Values.resources }}
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          # The root filesystem is read-only, so libraries that need scratch space get a /tmp.
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            # Mounting is what makes the CSI driver create the `support-env` secret (envFrom above).
+            - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }
           {{- if and $svc.ports (ne $name "mcp-servers") }}
           {{- /* Agents are ready only when the MCP tools their harness may call are really served. */}}
           readinessProbe: { httpGet: { path: {{ if hasPrefix "agent-" $name }}/readyz{{ else }}/healthz{{ end }}, port: 8000 }, periodSeconds: 5 }
           livenessProbe: { httpGet: { path: /healthz, port: 8000 }, initialDelaySeconds: 15 }
           {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 100Mi } }
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: support-env }
 {{- if $svc.ports }}
 ---
 apiVersion: v1

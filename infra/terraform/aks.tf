@@ -1,10 +1,8 @@
-resource "azurerm_container_registry" "main" {
-  name                = "acr${var.prefix}${var.env}${local.suffix}"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  sku                 = "Standard" # Premium is required for a private endpoint (prod)
-  admin_enabled       = false
-  tags                = local.tags
+# One registry shared by dev and prod, created by infra/bootstrap (the pipeline must be able to
+# build and push an image BEFORE this configuration has ever been applied).
+data "azurerm_container_registry" "main" {
+  name                = var.acr_name
+  resource_group_name = var.acr_resource_group_name
 }
 
 resource "azurerm_kubernetes_cluster" "main" {
@@ -63,7 +61,7 @@ resource "azurerm_kubernetes_cluster" "main" {
 }
 
 resource "azurerm_role_assignment" "aks_acr_pull" {
-  scope                = azurerm_container_registry.main.id
+  scope                = data.azurerm_container_registry.main.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_kubernetes_cluster.main.kubelet_identity[0].object_id
 }
@@ -79,6 +77,7 @@ locals {
     "agent-evaluator",
     "mcp-servers",
     "notification-worker",
+    "db-bootstrap", # runs migrations and creates Postgres roles for the others (pre-deploy hook)
   ])
   openai_users = toset([
     "fat-backend", # query rewrite and embeddings
@@ -111,12 +110,5 @@ resource "azurerm_role_assignment" "openai_user" {
   for_each             = local.openai_users
   scope                = azurerm_cognitive_account.openai.id
   role_definition_name = "Cognitive Services OpenAI User"
-  principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
-}
-
-resource "azurerm_role_assignment" "kv_secrets_user" {
-  for_each             = local.workloads
-  scope                = azurerm_key_vault.main.id
-  role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
 }

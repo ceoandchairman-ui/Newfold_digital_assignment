@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     database_url: SecretStr
     # Entra-only Postgres in Azure: each new connection gets a fresh token as its password (db.py).
     database_entra_auth: bool = False
+    # The Postgres role to connect as under Entra auth: the pod's identity NAME (id-<env>-<service>).
+    database_entra_user: str | None = None
     # Three Redis clusters, one per purpose (D9). Each has its own eviction policy in Terraform.
     #   redis_url             "cache": conversation window and verified flag. LRU eviction, no persistence.
     #   checkpoint_redis_url  LangGraph checkpoints, graph state, run locks. NoEviction + AOF + modules.

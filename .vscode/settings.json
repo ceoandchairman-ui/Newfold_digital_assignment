@@ -1,0 +1,10 @@
+{
+  // Helm templates contain Go-template syntax ({{ ... }}) and are not valid YAML until rendered.
+  // Treating them as "helm" (or plain text if no Helm extension is installed) stops the YAML
+  // language server from reporting hundreds of false errors. `helm lint` and `helm template`
+  // (run in CI) are the real checks.
+  "files.associations": {
+    "**/deploy/helm/**/templates/*.yaml": "helm",
+    "**/deploy/helm/**/templates/*.tpl": "helm"
+  }
+}

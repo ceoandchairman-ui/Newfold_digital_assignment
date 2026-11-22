@@ -1,0 +1,13 @@
+# Allowlist: only what the Dockerfile copies goes into the build context. This keeps .venv, .git,
+# .env files (secrets), tests, docs and infrastructure out of the context and out of the image.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src
+!migrations
+!alembic.ini
+!seed
+!eval
+**/__pycache__
+**/*.pyc

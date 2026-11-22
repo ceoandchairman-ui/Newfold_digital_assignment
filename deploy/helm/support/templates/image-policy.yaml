@@ -1,0 +1,33 @@
+{{- if .Values.signing.enforce }}
+# Admission policy (Kyverno): pods in this namespace may only run OUR image if it carries a cosign
+# keyless signature from a workflow in OUR repository (deploy.yml signs it). Other images (the OTel
+# collector) are not matched. Requires Kyverno to be installed first (deploy-env.yml does that).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-support-image-signatures
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  background: false
+  rules:
+    - name: verify-cosign-keyless
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [{{ .Values.namespace }}]
+      verifyImages:
+        - imageReferences:
+            - "{{ .Values.image.repository }}*"
+          required: true
+          mutateDigest: true   # pin the tag to the verified digest, so it cannot be swapped later
+          verifyDigest: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subjectRegExp: "^https://github.com/{{ .Values.signing.githubRepo }}/.*"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+{{- end }}

@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "hashicorp.terraform",
+    "charliermarsh.ruff",
+    "ms-python.python"
+  ]
+}

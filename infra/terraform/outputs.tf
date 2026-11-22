@@ -7,7 +7,7 @@ output "aks_name" {
 }
 
 output "acr_login_server" {
-  value = azurerm_container_registry.main.login_server
+  value = data.azurerm_container_registry.main.login_server
 }
 
 output "postgres_fqdn" {
@@ -45,12 +45,25 @@ output "workload_principal_ids" {
   value = { for k, v in azurerm_user_assigned_identity.workload : k => v.principal_id }
 }
 
-# The deploy pipeline stores this as the `otel-azuremonitor` Kubernetes secret for the collector.
-output "appinsights_connection_string" {
-  value     = azurerm_application_insights.main.connection_string
-  sensitive = true
-}
-
 output "grafana_name" {
   value = azurerm_dashboard_grafana.main.name
+}
+
+# --- Consumed by scripts/helm_values_from_terraform.py (the deploy pipeline) ------------------
+output "key_vault_name" {
+  value = azurerm_key_vault.main.name
+}
+
+output "tenant_id" {
+  value = data.azurerm_client_config.current.tenant_id
+}
+
+# The Key Vault CSI addon's identity: the single identity that reads secrets for every pod.
+output "csi_client_id" {
+  value = azurerm_kubernetes_cluster.main.key_vault_secrets_provider[0].secret_identity[0].client_id
+}
+
+# Identity names are `id-<identity_prefix>-<workload>`; Postgres role names are the same strings.
+output "identity_prefix" {
+  value = local.name
 }
