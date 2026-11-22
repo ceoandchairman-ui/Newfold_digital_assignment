@@ -5,3 +5,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# docs: only publish the three submission docs
+docs/*
+!docs/01_setup_and_run.md
+!docs/02_design_note.md
+!docs/03_tests_and_examples.md
