@@ -30,5 +30,5 @@ openai_deployments = {
 }
 
 # From infra/bootstrap outputs.
-acr_name                = "REPLACE_ACR_NAME"
+acr_name                = "acrsupportppiia"
 acr_resource_group_name = "rg-support-shared"

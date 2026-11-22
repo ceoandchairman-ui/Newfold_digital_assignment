@@ -22,6 +22,8 @@ terraform {
 
 provider "azurerm" {
   features {}
+  # The state account has shared keys disabled, so the provider must use Entra for the data plane.
+  storage_use_azuread = true
 }
 
 provider "azuread" {}

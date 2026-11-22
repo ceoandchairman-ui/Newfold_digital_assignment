@@ -11,3 +11,11 @@ docs/*
 !docs/01_setup_and_run.md
 !docs/02_design_note.md
 !docs/03_tests_and_examples.md
+
+# terraform: state and plans can contain secrets; providers are downloaded on init
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
