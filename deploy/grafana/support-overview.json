@@ -1,0 +1,75 @@
+{
+  "title": "Support Assistant: Overview",
+  "uid": "support-overview",
+  "description": "Customer turns, latency, payments, tools and guardrails. Metric names are the OTel instruments in observability.py after the collector's Prometheus translation (dots to underscores, counters get _total, units are suffixed). Confirm the names on the first deploy.",
+  "schemaVersion": 39,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "type": "custom",
+        "query": "dev,prod",
+        "current": { "text": "dev", "value": "dev" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Customer turns per minute",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "targets": [{ "expr": "sum(rate(support_turns_total{deployment_environment_name=\"$env\"}[5m])) * 60", "legendFormat": "turns/min" }]
+    },
+    {
+      "type": "timeseries", "title": "Turn latency p50 / p95 / p99 (ms)",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(support_turn_duration_milliseconds_bucket{deployment_environment_name=\"$env\"}[5m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(support_turn_duration_milliseconds_bucket{deployment_environment_name=\"$env\"}[5m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(support_turn_duration_milliseconds_bucket{deployment_environment_name=\"$env\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Escalations to a human, by reason",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "targets": [{ "expr": "sum by (reason) (increase(support_escalations_total{deployment_environment_name=\"$env\"}[15m]))", "legendFormat": "{{reason}}" }]
+    },
+    {
+      "type": "timeseries", "title": "Payments by outcome",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (outcome) (increase(support_payments_total{deployment_environment_name=\"$env\"}[15m]))", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "type": "stat", "title": "Unknown payment outcomes (reconcile!)",
+      "gridPos": { "x": 12, "y": 8, "w": 6, "h": 8 },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } },
+      "targets": [{ "expr": "sum(increase(support_payments_total{outcome=\"payment_outcome_unknown\",deployment_environment_name=\"$env\"}[24h]))" }]
+    },
+    {
+      "type": "stat", "title": "MCP circuits opened (24 h)",
+      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 8 },
+      "targets": [{ "expr": "sum by (rpc_service) (increase(support_mcp_circuit_opened_total{deployment_environment_name=\"$env\"}[24h]))", "legendFormat": "{{rpc_service}}" }]
+    },
+    {
+      "type": "timeseries", "title": "MCP tool calls by tool and result",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [{ "expr": "sum by (tool, ok) (rate(support_tool_calls_total{deployment_environment_name=\"$env\"}[5m]))", "legendFormat": "{{tool}} ok={{ok}}" }]
+    },
+    {
+      "type": "gauge", "title": "Tool cache hit rate",
+      "gridPos": { "x": 12, "y": 16, "w": 6, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [{ "expr": "sum(rate(support_tool_cache_lookups_total{result=\"hit\",deployment_environment_name=\"$env\"}[1h])) / sum(rate(support_tool_cache_lookups_total{deployment_environment_name=\"$env\"}[1h]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Guardrails: prompt attacks blocked and budget refusals",
+      "gridPos": { "x": 18, "y": 16, "w": 6, "h": 8 },
+      "targets": [
+        { "expr": "sum by (source) (increase(support_prompt_attacks_blocked_total{deployment_environment_name=\"$env\"}[1h]))", "legendFormat": "attack ({{source}})" },
+        { "expr": "sum(increase(support_budget_refusals_total{deployment_environment_name=\"$env\"}[1h]))", "legendFormat": "budget" }
+      ]
+    }
+  ]
+}

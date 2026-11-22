@@ -1,0 +1,85 @@
+<svg class="dark " xmlns="http://www.w3.org/2000/svg" viewBox="0 0 705.75 481" width="705.75" height="481" id="md2ef4e__root" data-diagram-type="ascii">
+  <style data-mercat-style="universal">.mercat text{font-family:'Google Sans',Roboto,Arial,sans-serif;fill:var(--m-text);dominant-baseline:central}.mercat .m-node .m-shape{fill:var(--m-node-fill);stroke:var(--m-node-stroke);stroke-width:1.5px}.mercat .m-edge .m-path{fill:none;stroke:var(--m-line);stroke-width:1.5px}.mercat .m-group .m-shape{fill:var(--m-group-fill);stroke:var(--m-group-stroke);stroke-width:1px}.mercat .m-group .m-label{fill:var(--m-group-text)}.mercat .m-note .m-shape{fill:var(--m-note-fill);stroke:var(--m-note-stroke);stroke-width:1px}.mercat .m-note .m-label{fill:var(--m-note-text)}.mercat .t-heading{font-size:14px;font-weight:600}.mercat .t-label{font-size:13px;font-weight:500}</style>
+  <style data-mercat-style="theme-light">#md2ef4e__root{--m-text:#1f1f1f;--m-line:#545454;--m-node-fill:#f8f9fa;--m-node-stroke:#747775;--m-group-fill:#f8f9fa;--m-group-stroke:#747775;--m-group-text:#1f1f1f;--m-note-fill:#fef9e7;--m-note-stroke:#f39c12;--m-note-text:#1f1f1f}</style>
+  <style data-mercat-style="theme-dark">#md2ef4e__root.dark{--m-text:#e3e3e3;--m-line:#bfbfbf;--m-node-fill:#2d2e30;--m-node-stroke:#8e918f;--m-group-fill:#2d2e30;--m-group-stroke:#8e918f;--m-group-text:#e3e3e3;--m-note-fill:#69550d;--m-note-stroke:#f39c12;--m-note-text:#e3e3e3}</style>
+  <style data-mercat-style="type">#md2ef4e__root .outer-box{fill:var(--m-text);stroke:var(--m-node-stroke);stroke-width:1.75px;fill-opacity:0.06}#md2ef4e__root .header-text{fill:var(--m-text);font-size:14px;font-weight:600;white-space:pre}#md2ef4e__root .arrow-line,#md2ef4e__root .bus-line{fill:none;stroke:var(--m-line);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}#md2ef4e__root .divider-line{fill:none;stroke:var(--m-node-stroke);stroke-width:1px;stroke-opacity:0.75}#md2ef4e__root .annotation-text{fill:var(--m-text);font-size:12px;font-weight:500;white-space:pre}</style>
+  <style data-mercat-style="diagram">#md2ef4e__root text{font-family:Google Sans Mono, Roboto Mono, monospace}</style>
+  <g class="mercat mercat-ascii">
+    <defs>
+      <marker id="md2ef4e__mk-arrow" refX="9.45" refY="3.4" markerWidth="10.8" markerHeight="6.8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path d="M 0 0 L 10.8 3.4 L 0 6.8 Z" class="m-marker" fill="var(--m-line)" stroke="none"/>
+      </marker>
+    </defs>
+    <g class="m-node shape outer cluster" id="md2ef4e__node__n0" data-role="step">
+      <rect x="40.5" y="70" width="221" height="66" class="m-shape outer-box"/>
+      <text x="146.75" y="103" class="m-label t-heading header-text" text-anchor="middle">troubleshoot_agent</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md2ef4e__node__n1" data-role="step">
+      <rect x="363.5" y="70" width="221" height="66" class="m-shape outer-box"/>
+      <text x="469.75" y="103" class="m-label t-heading header-text" text-anchor="middle">eval_agent</text>
+    </g>
+    <g class="m-group shape outer cluster" id="md2ef4e__group__g2" data-role="group">
+      <rect x="15" y="202" width="629" height="264" class="m-shape outer-box"/>
+      <line x1="15" y1="246" x2="644" y2="246" class="m-path divider-line"/>
+      <text x="325.25" y="224" class="m-label t-heading header-text" text-anchor="middle">ENTERPRISE INFRASTRUCTURE &amp; MEMORY TIERS</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md2ef4e__node__n3" data-role="step">
+      <rect x="40.5" y="268" width="221" height="88" class="m-shape outer-box"/>
+      <text x="146.75" y="301" class="m-label t-heading header-text" text-anchor="middle">PostgreSQL Vector</text>
+      <text x="146.75" y="323" class="m-label t-heading header-text" text-anchor="middle">(With pgvector)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md2ef4e__node__n4" data-role="step">
+      <rect x="363.5" y="268" width="221" height="88" class="m-shape outer-box"/>
+      <text x="469.75" y="301" class="m-label t-heading header-text" text-anchor="middle">PostgreSQL Core</text>
+      <text x="469.75" y="323" class="m-label t-heading header-text" text-anchor="middle">(Episodic Records)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md2ef4e__node__n5" data-role="step">
+      <rect x="40.5" y="356" width="544" height="88" class="m-shape outer-box"/>
+      <text x="308.25" y="378" class="m-label t-heading header-text" text-anchor="middle">Redis Memory Cluster</text>
+      <text x="202" y="400" class="m-label t-heading header-text" text-anchor="middle">- Short-Term Message Cache</text>
+      <text x="435.75" y="422" class="m-label t-heading header-text" text-anchor="middle">Graph Checkpointing</text>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__pt__pt__0" data-role="connector">
+      <line x1="19.25" y1="15" x2="639.75" y2="15" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__pt__n0__0" data-role="connector">
+      <line x1="19.25" y1="147" x2="44.75" y2="147" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__pt__pt__1" data-role="connector">
+      <line x1="639.75" y1="147" x2="690.75" y2="147" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__pt__pt__2" data-role="connector">
+      <line x1="19.25" y1="15" x2="19.25" y2="147" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__n0__n3__0" data-role="connector">
+      <line x1="146.75" y1="147" x2="146.75" y2="200.65" class="m-path arrow-line" marker-end="url(#md2ef4e__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__n5__pt__0" data-role="connector">
+      <line x1="333.75" y1="400" x2="333.75" y2="422" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__n1__n4__0" data-role="connector">
+      <line x1="469.75" y1="147" x2="469.75" y2="200.65" class="m-path arrow-line" marker-end="url(#md2ef4e__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md2ef4e__edge__pt__pt__3" data-role="connector">
+      <line x1="639.75" y1="15" x2="639.75" y2="147" class="m-path bus-line"/>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a0" data-role="annotation">
+      <text x="227.5" y="37" class="m-label t-label annotation-text" text-anchor="start">LANGGRAPH ORCHESTRATION</text>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a1" data-role="annotation">
+      <text x="57.5" y="147" class="m-label t-label annotation-text" text-anchor="start">On-Demand</text>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a2" data-role="annotation">
+      <text x="159.5" y="147" class="m-label t-label annotation-text" text-anchor="start">Query Vector Chunks</text>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a3" data-role="annotation">
+      <text x="482.5" y="147" class="m-label t-label annotation-text" text-anchor="start">Query Historical</text>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a4" data-role="annotation">
+      <text x="159.5" y="169" class="m-label t-label annotation-text" text-anchor="start">(Semantic Memory)</text>
+    </g>
+    <g class="m-node m-note" id="md2ef4e__note__a5" data-role="annotation">
+      <text x="482.5" y="169" class="m-label t-label annotation-text" text-anchor="start">Sequences (Episodic)</text>
+    </g>
+  </g>
+</svg>

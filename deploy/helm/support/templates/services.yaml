@@ -1,0 +1,112 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    azure.workload.identity/client-id: {{ $svc.clientId | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels: { app: {{ $name }} }
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: app
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          command: {{ toJson $svc.command }}
+          {{- if $svc.ports }}
+          ports:
+            {{- range $svc.ports }}
+            - containerPort: {{ . }}
+            {{- end }}
+          {{- end }}
+          envFrom:
+            - secretRef: { name: support-env }   # synced from Key Vault by the CSI driver
+          env:
+            {{- range $k, $v := merge (deepCopy ($svc.env | default dict)) $.Values.commonEnv }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+            # Semantic-convention resource attributes (service.version / deployment.environment.name).
+            - { name: SERVICE_VERSION, value: {{ $.Values.image.tag | quote }} }
+            - { name: DEPLOYMENT_ENVIRONMENT, value: {{ $.Values.environment | quote }} }
+            {{- with $svc.objectId }}
+            # Redis username under Entra auth (terraform output workload_principal_ids).
+            - { name: REDIS_ENTRA_OBJECT_ID, value: {{ . | quote }} }
+            {{- end }}
+          resources: {{ toJson $.Values.resources }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          {{- if and $svc.ports (ne $name "mcp-servers") }}
+          {{- /* Agents are ready only when the MCP tools their harness may call are really served. */}}
+          readinessProbe: { httpGet: { path: {{ if hasPrefix "agent-" $name }}/readyz{{ else }}/healthz{{ end }}, port: 8000 }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /healthz, port: 8000 }, initialDelaySeconds: 15 }
+          {{- end }}
+{{- if $svc.ports }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  selector: { app: {{ $name }} }
+  ports:
+    {{- range $svc.ports }}
+    - { name: p{{ . }}, port: {{ . }}, targetPort: {{ . }} }
+    {{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+  minReplicas: {{ $.Values.hpa.minReplicas }}
+  maxReplicas: {{ $.Values.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $.Values.hpa.cpuTarget }} } }
+{{- end }}
+{{- end }}
+---
+# Default deny, then allow only the declared callers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+{{- range $name, $callers := .Values.allowedCallers }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-{{ $name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  podSelector:
+    matchLabels: { app: {{ $name }} }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- range $callers }}
+        - podSelector: { matchLabels: { app: {{ . }} } }
+        {{- end }}
+{{- end }}

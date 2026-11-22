@@ -1,0 +1,5 @@
+[
+  {"query": "my phone shows no signal", "relevant_sections": ["Guide > No signal"]},
+  {"query": "mobile data is very slow", "relevant_sections": ["Guide > Slow data"]},
+  {"query": "SIM card is locked", "relevant_sections": ["Guide > No signal > SIM"]}
+]

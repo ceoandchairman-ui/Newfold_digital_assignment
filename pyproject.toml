@@ -1,0 +1,75 @@
+[project]
+name = "support-assistant"
+version = "0.1.0"
+description = "Enterprise MCP multi-agent support assistant (LangGraph + MAF, Postgres/pgvector, Redis)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.2,<2",  # upper bounds: a new major must be a deliberate upgrade
+    # Microsoft Agent Framework (D8): the agent layer in agent services. Pre-release; confirmed in the E4-0 spike.
+    "agent-framework>=1.22,<2",
+    # Chains: fat-backend query rewrite and LangGraph nodes that call outside the agent harness (not agent services).
+    "langchain-core>=1.8,<2",
+    "langchain-openai>=1.8,<2",
+    # Indexer pipeline: loaders and splitters. Also used by graph-node retrievers and backend chains.
+    "langchain-text-splitters>=1.1,<2",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
+    "redis>=5",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "mcp>=1.9,<2", # 2.x renamed FastMCP and the client API; migrate deliberately (E8)
+    "azure-identity>=1.17",
+    "azure-servicebus>=7.12",
+    "azure-communication-sms>=1.0",
+    "azure-communication-email>=1.0",
+    "structlog>=24.1",
+    "httpx>=0.27",
+    "tenacity>=8.5",
+    "alembic>=1.13",
+    "sqlalchemy>=2.0",
+    "opentelemetry-sdk>=1.26",
+    "azure-monitor-opentelemetry>=1.6",
+    "langgraph-checkpoint-redis>=0.6,<0.7",  # 0.x: minors may break
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
+    "opentelemetry-instrumentation-httpx>=0.51b0",
+    "opentelemetry-instrumentation-psycopg>=0.51b0",
+    "opentelemetry-instrumentation-redis>=0.51b0",
+    "opentelemetry-instrumentation-asgi>=0.51b0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/support_assistant"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line length is the formatter's job; long SQL and comments are fine
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]

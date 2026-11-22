@@ -1,0 +1,148 @@
+# One environment's deployment, called by deploy.yml (E10-14, E11-A3/A5/A8, E12-B5).
+#   plan    : Terraform plan saved as an artifact (no approval needed to look at it)
+#   apply   : gated by the environment's required reviewers; applies EXACTLY the saved plan,
+#             then migrations, collector secret, Helm, smoke test, dashboards, release annotation.
+name: deploy-env
+on:
+  workflow_call:
+    inputs:
+      environment: { type: string, required: true }
+      tag: { type: string, required: true }
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_ENV: ${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: plan-${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init -input=false -backend-config="envs/${TF_ENV}.backend.hcl"
+      - run: terraform plan -input=false -var-file="envs/${TF_ENV}.tfvars" -out=tfplan
+      - name: Plan summary for the reviewer
+        run: terraform show -no-color tfplan | tail -n 400 >> "$GITHUB_STEP_SUMMARY"
+      - name: Fingerprint the reviewed plan
+        run: sha256sum tfplan | tee tfplan.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: |
+            infra/terraform/tfplan
+            infra/terraform/tfplan.sha256
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}   # required reviewers gate prod here, AFTER the plan is visible
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant:${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_wrapper: false }
+      - uses: actions/download-artifact@v4
+        with: { name: "tfplan-${{ inputs.environment }}", path: infra/terraform }
+
+      - name: Terraform apply (the reviewed plan, byte for byte)
+        working-directory: infra/terraform
+        run: |
+          sha256sum -c tfplan.sha256
+          terraform init -input=false -backend-config="envs/${TF_ENV}.backend.hcl"
+          terraform apply -input=false tfplan
+
+      - name: Verify the image signature before deploying it (E11-A1)
+        run: |
+          curl -sSfL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o cosign
+          chmod +x cosign
+          az acr login --name "${{ vars.ACR_NAME }}"
+          ./cosign verify "$IMAGE" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+      - name: Cluster credentials
+        run: |
+          az aks get-credentials --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --name "${{ vars.AKS_NAME }}" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Collector secret (App Insights connection string from Terraform)
+        working-directory: infra/terraform
+        run: |
+          CS="$(terraform output -raw appinsights_connection_string)"
+          kubectl -n support create secret generic otel-azuremonitor \
+            --from-literal=connection-string="$CS" --dry-run=client -o yaml | kubectl apply -f -
+
+      # Migrations run as a one-off pod inside the VNet (the database is private), using the
+      # image about to be deployed. EMBEDDING_DIM must match the embedder (D3).
+      - name: Database migrations
+        run: |
+          NAME="migrate-${{ inputs.tag }}"
+          kubectl -n support run "$NAME" --rm -i --restart=Never --image "$IMAGE" \
+            --overrides="{\"metadata\":{\"labels\":{\"azure.workload.identity/use\":\"true\"}},
+              \"spec\":{\"serviceAccountName\":\"fat-backend\",\"containers\":[{\"name\":\"$NAME\",
+              \"image\":\"$IMAGE\",\"args\":[\"alembic\",\"upgrade\",\"head\"],
+              \"envFrom\":[{\"secretRef\":{\"name\":\"support-env\"}}],
+              \"env\":[{\"name\":\"EMBEDDING_DIM\",\"value\":\"1024\"},
+                       {\"name\":\"DATABASE_ENTRA_AUTH\",\"value\":\"true\"}]}]}}"
+
+      - name: Helm upgrade
+        run: |
+          helm upgrade --install support deploy/helm/support \
+            --namespace support --create-namespace --wait --timeout 10m --atomic \
+            --set image.repository="${{ vars.ACR_NAME }}.azurecr.io/support-assistant" \
+            --set image.tag="${{ inputs.tag }}" \
+            --set environment="${TF_ENV}"
+
+      - name: Smoke test (blocks promotion on failure)
+        run: |
+          kubectl -n support run "smoke-${{ inputs.tag }}" --rm -i --restart=Never \
+            --labels app=smoke-test --image "$IMAGE" \
+            --env SMOKE_PHONE="${{ vars.SMOKE_PHONE }}" --env SMOKE_DOB="${{ vars.SMOKE_DOB }}" \
+            -- python -m support_assistant.smoke
+
+      - name: Roll back on a failed smoke test
+        if: failure()
+        run: helm rollback support --namespace support --wait || true
+
+      - name: Dashboards as code
+        working-directory: infra/terraform
+        run: |
+          az extension add --name amg --only-show-errors
+          az grafana dashboard import --name "$(terraform output -raw grafana_name)" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
+            --definition ../../deploy/grafana/support-overview.json --overwrite true
+
+      - name: Release annotation (deploy marker on dashboards and traces)
+        working-directory: infra/terraform
+        run: |
+          echo "Deployed ${{ inputs.tag }} to ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          az rest --method put \
+            --url "https://management.azure.com$(az monitor app-insights component show \
+              --app "appi-support-${TF_ENV}" -g "${{ vars.RESOURCE_GROUP }}" --query id -o tsv)/Annotations?api-version=2015-05-01" \
+            --body "{\"Id\":\"$(uuidgen)\",\"AnnotationName\":\"${{ inputs.tag }}\",\"EventTime\":\"$(date -u +%FT%TZ)\",\"Category\":\"Deployment\"}" \
+            || echo "annotation skipped (non-blocking)"

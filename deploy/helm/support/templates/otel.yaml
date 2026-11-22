@@ -1,0 +1,210 @@
+{{- if .Values.otel.enabled }}
+# OpenTelemetry Collector (E12-B5), two tiers:
+#   otel-gateway  (stateless, N replicas): OTLP in, k8s attributes, PII redaction, then
+#                 traces load-balanced BY TRACE ID to the sampler tier; metrics and logs exported.
+#   otel-sampler  (headless, N replicas): tail sampling with the WHOLE trace in view, then export.
+# Services send OTLP http to otel-gateway:4318 (commonEnv OTEL_EXPORTER_OTLP_ENDPOINT).
+{{- $ns := .Values.namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: otel-collector, namespace: {{ $ns }} }
+---
+# k8sattributes needs to read pod metadata to enrich telemetry with k8s.* attributes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: support-otel-collector }
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets, deployments]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: support-otel-collector }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: support-otel-collector }
+subjects:
+  - { kind: ServiceAccount, name: otel-collector, namespace: {{ $ns }} }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: otel-gateway, namespace: {{ $ns }} }
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http: { endpoint: 0.0.0.0:4318 }
+          grpc: { endpoint: 0.0.0.0:4317 }
+    processors:
+      memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+      k8sattributes:
+        extract:
+          metadata: [k8s.namespace.name, k8s.pod.name, k8s.deployment.name, k8s.node.name]
+      # PII never leaves the cluster: drop GenAI message content and auth headers outright,
+      # and mask phone numbers / email addresses in any remaining attribute value.
+      attributes/pii:
+        actions:
+          - { pattern: "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages).*", action: delete }
+          - { key: http.request.header.authorization, action: delete }
+          - { key: http.request.header.cookie, action: delete }
+      redaction:
+        allow_all_keys: true
+        blocked_values:
+          - "\\+?[0-9][0-9 ()-]{7,}[0-9]"
+          - "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+        summary: info
+      batch: { send_batch_size: 1024, timeout: 2s }
+    exporters:
+      loadbalancing:
+        routing_key: traceID
+        protocol:
+          otlp: { tls: { insecure: true } }   # in-cluster hop, NetworkPolicy-restricted
+        resolver:
+          dns: { hostname: otel-sampler-headless.{{ $ns }}.svc.cluster.local, port: 4317 }
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+      prometheus:
+        endpoint: 0.0.0.0:8889          # scraped by Azure Monitor managed Prometheus
+        resource_to_telemetry_conversion: { enabled: true }
+    extensions:
+      health_check: { endpoint: 0.0.0.0:13133 }
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, attributes/pii, redaction, batch]
+          exporters: [loadbalancing]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus, azuremonitor]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, attributes/pii, redaction, batch]
+          exporters: [azuremonitor]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: otel-sampler, namespace: {{ $ns }} }
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+    processors:
+      memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+      # Keep every trace that matters; sample the routine rest.
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        policies:
+          - { name: errors, type: status_code, status_code: { status_codes: [ERROR] } }
+          - { name: slow-turns, type: latency, latency: { threshold_ms: {{ .Values.otel.slowTraceMs }} } }
+          - { name: payments, type: boolean_attribute, boolean_attribute: { key: support.payment, value: true } }
+          - { name: escalations, type: boolean_attribute, boolean_attribute: { key: support.escalated, value: true } }
+          - { name: approvals, type: boolean_attribute, boolean_attribute: { key: support.awaiting_approval, value: true } }
+          - { name: baseline, type: probabilistic, probabilistic: { sampling_percentage: {{ .Values.otel.baselineSamplePercent }} } }
+      batch: { send_batch_size: 1024, timeout: 2s }
+    exporters:
+      azuremonitor:
+        connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+    extensions:
+      health_check: { endpoint: 0.0.0.0:13133 }
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, tail_sampling, batch]
+          exporters: [azuremonitor]
+{{- range $tier := list "gateway" "sampler" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: otel-{{ $tier }}, namespace: {{ $ns }} }
+spec:
+  replicas: {{ index $.Values.otel.replicas $tier }}
+  selector: { matchLabels: { app: otel-{{ $tier }} } }
+  template:
+    metadata:
+      labels: { app: otel-{{ $tier }} }
+      annotations:
+        # Roll the collectors when their settings change (hashing this file itself would recurse).
+        checksum/config: {{ toJson $.Values.otel | sha256sum }}
+        {{- if eq $tier "gateway" }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8889"
+        {{- end }}
+    spec:
+      serviceAccountName: otel-collector
+      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      containers:
+        - name: collector
+          image: {{ $.Values.otel.image | quote }}
+          args: ["--config=/conf/config.yaml"]
+          env:
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom: { secretKeyRef: { name: otel-azuremonitor, key: connection-string } }
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            {{- if eq $tier "gateway" }}
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: prom, containerPort: 8889 }
+            {{- end }}
+          readinessProbe: { httpGet: { path: /, port: 13133 } }
+          livenessProbe: { httpGet: { path: /, port: 13133 }, initialDelaySeconds: 10 }
+          resources: {{ toJson $.Values.otel.resources }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: conf, mountPath: /conf }]
+      volumes:
+        - { name: conf, configMap: { name: otel-{{ $tier }} } }
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata: { name: otel-gateway, namespace: {{ $ns }} }
+spec:
+  selector: { app: otel-gateway }
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+---
+# Headless: the gateway's load-balancing exporter resolves every sampler pod and hashes trace ids.
+apiVersion: v1
+kind: Service
+metadata: { name: otel-sampler-headless, namespace: {{ $ns }} }
+spec:
+  clusterIP: None
+  selector: { app: otel-sampler }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+---
+# Default deny is on: allow our pods -> gateway, gateway -> sampler, managed Prometheus -> gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-to-otel-gateway, namespace: {{ $ns }} }
+spec:
+  podSelector: { matchLabels: { app: otel-gateway } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: {} }]
+      ports: [{ port: 4318 }, { port: 4317 }]
+    - from: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 8889 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-to-otel-sampler, namespace: {{ $ns }} }
+spec:
+  podSelector: { matchLabels: { app: otel-sampler } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: otel-gateway } } }]
+      ports: [{ port: 4317 }]
+{{- end }}

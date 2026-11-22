@@ -1,0 +1,67 @@
+"""Async Postgres pool (E1-4).
+
+Production Postgres is Entra-only (password auth is disabled in Terraform). Entra access tokens
+expire after about an hour, so a static password in DATABASE_URL cannot work. Instead the pool asks
+for connection arguments per NEW connection, and each one gets a fresh token as its password
+(`DATABASE_ENTRA_AUTH=true`). DATABASE_URL then carries host, database and user only.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
+
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
+from psycopg_pool import AsyncConnectionPool
+
+from support_assistant.config import Settings
+
+# Every connection from our pool returns rows as dicts.
+Conn = AsyncConnection[DictRow]
+Pool = AsyncConnectionPool[Conn]
+
+POSTGRES_ENTRA_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
+TokenProvider = Callable[[], Awaitable[str]]
+
+
+def entra_token_provider() -> TokenProvider:  # pragma: no cover - needs Azure identity
+    from azure.identity.aio import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+
+    async def token() -> str:
+        return (await credential.get_token(POSTGRES_ENTRA_SCOPE)).token
+
+    return token
+
+
+def connection_kwargs(token_provider: TokenProvider | None) -> Any:
+    """Static kwargs, or an async callable that adds a fresh token for each new connection."""
+    base: dict[str, Any] = {"row_factory": dict_row, "autocommit": False}
+    if token_provider is None:
+        return base
+
+    async def with_token() -> dict[str, Any]:
+        return {**base, "password": await token_provider(), "sslmode": "require"}
+
+    return with_token
+
+
+def make_pool(settings: Settings, token_provider: TokenProvider | None = None) -> Pool:
+    """Create (but do not open) the pool. Call `await pool.open()` at startup."""
+    if token_provider is None and settings.database_entra_auth:
+        token_provider = entra_token_provider()
+    return cast(
+        Pool,
+        AsyncConnectionPool(
+            conninfo=settings.database_url.get_secret_value(),
+            min_size=settings.db_pool_min_size,
+            max_size=settings.db_pool_max_size,
+            timeout=settings.db_pool_timeout_s,
+            # Recycle connections before their token could matter (tokens last ~60 minutes).
+            max_lifetime=45 * 60,
+            kwargs=connection_kwargs(token_provider),
+            open=False,
+        ),
+    )

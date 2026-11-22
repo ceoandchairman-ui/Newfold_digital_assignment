@@ -1,0 +1,68 @@
+# Build once, promote the same image: dev on every merge to main, prod after manual approval (E10-14).
+# Prod approval is enforced by the GitHub "production" environment's required reviewers.
+# Azure access uses OpenID Connect (federated credentials), never stored secrets.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC token for azure/login
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false   # never interrupt a deployment halfway
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and push to ACR
+        run: |
+          az acr build --registry "${{ vars.ACR_NAME }}" \
+            --image "support-assistant:${{ steps.tag.outputs.tag }}" .
+
+      # Supply chain (E11-A1): keyless signature + SBOM attestation, both tied to this workflow's
+      # GitHub OIDC identity. deploy-env.yml refuses to deploy an image that does not verify.
+      - uses: sigstore/cosign-installer@v3
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: Sign the image and attest its SBOM
+        env:
+          REPO: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant
+        run: |
+          az acr login --name "${{ vars.ACR_NAME }}"
+          DIGEST="$(az acr repository show --name "${{ vars.ACR_NAME }}" \
+            --image "support-assistant:${{ steps.tag.outputs.tag }}" --query digest -o tsv)"
+          REF="$REPO@$DIGEST"
+          syft "$REF" -o cyclonedx-json > sbom.cdx.json
+          cosign sign --yes "$REF"
+          cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "$REF"
+
+  deploy-dev:
+    needs: build
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: dev
+      tag: ${{ needs.build.outputs.tag }}
+    secrets: inherit
+
+  deploy-prod:
+    needs: [build, deploy-dev]
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: production   # required reviewers gate this job
+      tag: ${{ needs.build.outputs.tag }}
+    secrets: inherit

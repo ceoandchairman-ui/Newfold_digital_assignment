@@ -1,0 +1,130 @@
+# Retention job (E7-2), availability (E10-11), cost guardrails (E10-12) and ingress (E10-7).
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: prune-sessions
+  namespace: {{ .Values.namespace }}
+spec:
+  schedule: {{ .Values.retention.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: prune-sessions
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: fat-backend   # reuses the backend identity (Postgres access)
+          restartPolicy: OnFailure
+          securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+          containers:
+            - name: job
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              command: ["python", "-m", "support_assistant.jobs", "prune-sessions", "--days", {{ .Values.retention.sessionDays | quote }}]
+              envFrom:
+                - secretRef: { name: support-env }
+              env:
+                {{- range $k, $v := .Values.commonEnv }}
+                - { name: {{ $k }}, value: {{ $v | quote }} }
+                {{- end }}
+              resources: {{ toJson .Values.resources }}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.ports }}
+---
+# Keep at least one pod of every service up during node drains and upgrades.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: {{ $name }} }
+{{- end }}
+{{- end }}
+---
+# Cost guardrail: the namespace cannot grow past these totals, whatever the autoscalers ask for.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: support-quota
+  namespace: {{ .Values.namespace }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.quota.cpu | quote }}
+    requests.memory: {{ .Values.quota.memory | quote }}
+    pods: {{ .Values.quota.pods | quote }}
+---
+# Defaults for any container that forgets to set requests and limits.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: support-defaults
+  namespace: {{ .Values.namespace }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest: { cpu: 100m, memory: 128Mi }
+      default: { memory: 512Mi }
+{{- if .Values.ingress.enabled }}
+---
+# Only the fat backend is reachable from outside the cluster, and only through the edge (E10-16).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fat-backend
+  namespace: {{ .Values.namespace }}
+  annotations: {{ toJson .Values.ingress.annotations }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fat-backend
+                port: { number: 8000 }
+---
+# The namespace denies all ingress by default; without this, the ingress controller could never
+# reach the backend. Only the controller's namespace is allowed in, and only to fat-backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller-to-fat-backend
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels: { app: fat-backend }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Values.ingress.controllerNamespace }} }
+      ports:
+        - { port: 8000, protocol: TCP }
+{{- end }}
+---
+# The post-deploy smoke test pod (label app=smoke-test) may call the services' HTTP port, nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-smoke-test
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [fat-backend, orchestrator, agent-director, agent-troubleshooter, agent-evaluator] }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: smoke-test } } }]
+      ports: [{ port: 8000 }]

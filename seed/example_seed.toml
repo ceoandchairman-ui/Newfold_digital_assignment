@@ -1,0 +1,79 @@
+# Example seed in the format seed.py accepts (E1-2). The original db.toml is lost (D1);
+# these rows match the journey tests (C1002 pays B1005) so dev behaves like the tests.
+
+[[customers]]
+id = "C1001"
+full_name = "Ada Lovelace"
+date_of_birth = 1990-05-01
+phone = "+15550001"
+email = "ada@example.invalid"
+
+[[customers]]
+id = "C1002"
+full_name = "Alan Turing"
+date_of_birth = 1985-06-23
+phone = "+15550002"
+
+[[plans]]
+id = "P-BASIC"
+name = "Basic"
+monthly_price = "20.00"
+data_limit_mb = 5000
+
+[[plans]]
+id = "P-PLUS"
+name = "Plus"
+monthly_price = "42.50"
+data_limit_mb = 5000
+
+[[payment_methods]]
+id = "PM1"
+customer_id = "C1002"
+kind = "card"
+last4 = "4242"
+
+[[lines]]
+id = "L1"
+customer_id = "C1001"
+plan_id = "P-BASIC"
+phone_number = "+15550001"
+status = "ACTIVE"
+data_used_mb = 800
+contract_end_date = 2027-06-01
+
+[[lines]]
+id = "L2"
+customer_id = "C1002"
+plan_id = "P-PLUS"
+phone_number = "+15550002"
+status = "ACTIVE"
+data_used_mb = 4900
+
+[[devices]]
+id = "D1"
+line_id = "L1"
+model = "Pixel 8"
+
+[[devices]]
+id = "D2"
+line_id = "L2"
+model = "iPhone 15"
+
+[[bills]]
+id = "B2001"
+customer_id = "C1001"
+amount_due = "20.00"
+due_date = 2026-12-01
+status = "PAID"
+
+[[bills]]
+id = "B1005"
+customer_id = "C1002"
+amount_due = "42.50"
+due_date = 2026-11-01
+status = "ISSUED"
+
+[[bill_line_items]]
+bill_id = "B1005"
+description = "Plus plan, November"
+amount = "42.50"

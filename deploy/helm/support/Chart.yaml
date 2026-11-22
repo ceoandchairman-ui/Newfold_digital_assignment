@@ -1,0 +1,5 @@
+apiVersion: v2
+name: support
+description: Enterprise MCP multi-agent support assistant (one Deployment per concern)
+version: 0.1.0
+appVersion: "0.1.0"

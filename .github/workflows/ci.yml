@@ -1,0 +1,148 @@
+# Pull request and main-branch checks (E0-4, E11-A1/A2/A7/A9). Every job must pass to merge.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev --prerelease=allow --python 3.12
+      - run: uv run ruff check src tests scripts
+      - run: uv run ruff format --check src tests scripts
+      - run: uv run mypy src
+      - run: uv run pytest -q
+      - name: Migration safety (expand and contract only)
+        run: uv run python scripts/check_migrations.py migrations/versions
+      - name: Dependency vulnerabilities
+        run: uvx pip-audit --strict --progress-spinner off -r <(uv export --no-hashes --no-dev)
+
+  # Real Postgres (pgvector) and Redis Stack as throwaway CI service containers (nothing local).
+  # Runs the migrations, real SQL, row locks, hybrid search and the Redis checkpointer.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: it }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      redis:
+        image: redis/redis-stack-server:7.4.0-v1
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+    env:
+      IT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/it
+      IT_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra dev --prerelease=allow --python 3.12
+      - name: Integration tests (must not skip)
+        run: |
+          uv run pytest -q tests/integration -rs | tee it.log
+          ! grep -q "SKIPPED" it.log   # a skipped integration test here means a broken setup
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - name: IaC policy (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/terraform
+          framework: terraform
+          quiet: true
+          soft_fail: false
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/support
+      - run: helm template support deploy/helm/support --set ingress.enabled=true > rendered.yaml
+      - name: Kubernetes schema validation
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary -ignore-missing-schemas rendered.yaml
+      - name: Kubernetes policy (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          file: rendered.yaml
+          framework: kubernetes
+          quiet: true
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t support-assistant:ci .
+      - name: Image vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: support-assistant:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: support-assistant:ci
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom, path: sbom.cdx.json }
+
+  # Terraform plan for both environments, posted on the pull request (E11-A2). Read-only identity.
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      matrix:
+        env: [dev, prod]
+    environment: plan-${{ matrix.env }}   # holds the plan-only (Reader) OIDC identity
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init -input=false -backend-config="envs/${{ matrix.env }}.backend.hcl"
+      - id: plan
+        run: terraform plan -input=false -lock=false -no-color -var-file="envs/${{ matrix.env }}.tfvars" > plan.txt
+      - name: Comment the plan on the pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/terraform/plan.txt', 'utf8').slice(-60000);
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: context.issue.number,
+              body: `### Terraform plan: ${{ matrix.env }}\n\`\`\`\n${plan}\n\`\`\``,
+            });

@@ -1,0 +1,119 @@
+namespace: support
+keyVault:
+  name: ""          # terraform output key_vault_uri (name part)
+  tenantId: ""
+  csiClientId: ""   # client id of a workload identity allowed to read the vault
+image:
+  repository: REPLACE_ACR.azurecr.io/support-assistant
+  tag: dev
+
+# Client IDs come from `terraform output workload_identity_client_ids`.
+services:
+  fat-backend:
+    command: ["uvicorn", "support_assistant.backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: [8000]
+    public: true
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  orchestrator:
+    command: ["uvicorn", "support_assistant.orchestrator.service:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: [8000]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  agent-director:
+    command: ["uvicorn", "support_assistant.agents.service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env: { AGENT: director }
+    ports: [8000]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  agent-troubleshooter:
+    command: ["uvicorn", "support_assistant.agents.service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env: { AGENT: troubleshooter }
+    ports: [8000]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  agent-evaluator:
+    command: ["uvicorn", "support_assistant.agents.service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env: { AGENT: evaluator }
+    ports: [8000]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  notification-worker:
+    command: ["python", "-m", "support_assistant.worker"]
+    ports: []
+    replicas: 1
+    worker: true   # no HTTP probes or Service
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+  mcp-servers:
+    command: ["python", "-m", "support_assistant.mcp_servers.main"]
+    ports: [8001, 8002, 8003]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
+
+# Who may call whom (default deny, E10-7).
+allowedCallers:
+  orchestrator: [fat-backend]
+  agent-director: [orchestrator]
+  agent-troubleshooter: [orchestrator]
+  agent-evaluator: [orchestrator]
+  mcp-servers: [agent-director, agent-troubleshooter, agent-evaluator, orchestrator]
+
+resources:
+  requests: { cpu: 250m, memory: 384Mi }
+  limits: { memory: 768Mi }
+
+hpa:
+  minReplicas: 2
+  maxReplicas: 10
+  cpuTarget: 60
+
+# Retention (E7-2). The period comes from the compliance owner (E5-8); 90 is a placeholder.
+retention:
+  schedule: "15 3 * * *"
+  sessionDays: 90
+
+# Namespace ceiling (E10-12).
+quota:
+  cpu: "16"
+  memory: 32Gi
+  pods: "80"
+
+# Ingress for the fat backend only (E10-7). Front Door (E10-16) sits in front of it.
+ingress:
+  enabled: false
+  className: webapprouting.kubernetes.azure.com
+  host: api.example.invalid
+  tlsSecret: fat-backend-tls
+  controllerNamespace: app-routing-system   # where the AKS app-routing ingress controller runs
+  annotations: {}
+
+# Set on every service (a service's own env wins on a clash).
+commonEnv:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-gateway:4318"   # OTLP http/protobuf to the collector
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+  OTEL_GENAI_CAPTURE_CONTENT: "false"                       # never ship prompts/completions
+  DATABASE_ENTRA_AUTH: "true"   # Postgres is Entra-only: fresh token per connection (db.py)
+  REDIS_ENTRA_AUTH: "true"      # Redis: token auth as the pod's identity (redis_factory.py)
+  USE_STUB_GATEWAY: "true"      # the real payment gateway is still an open decision
+
+# Deployment environment name on every span (deployment.environment.name).
+environment: dev
+
+# OpenTelemetry Collector (E12-B5). The App Insights connection string is the Kubernetes secret
+# `otel-azuremonitor` (key connection-string), created by the deploy pipeline from Terraform output.
+otel:
+  enabled: true
+  image: otel/opentelemetry-collector-contrib:0.111.0
+  replicas: { gateway: 2, sampler: 2 }
+  baselineSamplePercent: 10    # routine traces kept; errors, payments, escalations, slow: 100%
+  slowTraceMs: 3000
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 1Gi }

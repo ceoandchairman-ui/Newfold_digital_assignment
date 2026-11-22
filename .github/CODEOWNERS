@@ -1,0 +1,14 @@
+# Required reviewers (E11-A9). Branch protection must enable "Require review from Code Owners".
+# Replace the team names with real GitHub teams before enabling.
+
+*                         @REPLACE-org/support-assistant-devs
+
+# Infrastructure, delivery and pipelines need a platform reviewer.
+/infra/                   @REPLACE-org/platform
+/deploy/                  @REPLACE-org/platform
+/.github/                 @REPLACE-org/platform
+
+# Money and data: the payment flow, migrations and data governance need a second pair of eyes.
+/src/support_assistant/services/payments.py   @REPLACE-org/payments-owners
+/migrations/                                  @REPLACE-org/payments-owners
+/src/support_assistant/governance.py          @REPLACE-org/data-protection

@@ -1,0 +1,173 @@
+<svg class="dark " xmlns="http://www.w3.org/2000/svg" viewBox="0 0 803.5 1327" width="803.5" height="1327" id="md7fb3b__root" data-diagram-type="ascii">
+  <style data-mercat-style="universal">.mercat text{font-family:'Google Sans',Roboto,Arial,sans-serif;fill:var(--m-text);dominant-baseline:central}.mercat .m-node .m-shape{fill:var(--m-node-fill);stroke:var(--m-node-stroke);stroke-width:1.5px}.mercat .m-edge .m-path{fill:none;stroke:var(--m-line);stroke-width:1.5px}.mercat .m-group .m-shape{fill:var(--m-group-fill);stroke:var(--m-group-stroke);stroke-width:1px}.mercat .m-group .m-label{fill:var(--m-group-text)}.mercat .m-note .m-shape{fill:var(--m-note-fill);stroke:var(--m-note-stroke);stroke-width:1px}.mercat .m-note .m-label{fill:var(--m-note-text)}.mercat .t-heading{font-size:14px;font-weight:600}.mercat .t-label{font-size:13px;font-weight:500}</style>
+  <style data-mercat-style="theme-light">#md7fb3b__root{--m-bg:#ffffff;--m-text:#1f1f1f;--m-line:#545454;--m-node-fill:#f8f9fa;--m-node-stroke:#747775;--m-group-fill:#f8f9fa;--m-group-stroke:#747775;--m-group-text:#1f1f1f;--m-note-fill:#fef9e7;--m-note-stroke:#f39c12;--m-note-text:#1f1f1f}</style>
+  <style data-mercat-style="theme-dark">#md7fb3b__root.dark{--m-bg:#1f1f1f;--m-text:#e3e3e3;--m-line:#bfbfbf;--m-node-fill:#2d2e30;--m-node-stroke:#8e918f;--m-group-fill:#2d2e30;--m-group-stroke:#8e918f;--m-group-text:#e3e3e3;--m-note-fill:#69550d;--m-note-stroke:#f39c12;--m-note-text:#e3e3e3}</style>
+  <style data-mercat-style="type">#md7fb3b__root .outer-box{fill:var(--m-text);stroke:var(--m-node-stroke);stroke-width:1.75px;fill-opacity:0.06}#md7fb3b__root .rect-pill{fill:var(--m-bg);stroke:var(--m-node-stroke);stroke-width:1.5px}#md7fb3b__root .header-text{fill:var(--m-text);font-size:14px;font-weight:600;white-space:pre}#md7fb3b__root .label-text{fill:var(--m-text);font-size:13px;font-weight:500;white-space:pre}#md7fb3b__root .arrow-line,#md7fb3b__root .bus-line{fill:none;stroke:var(--m-line);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round}#md7fb3b__root .divider-line{fill:none;stroke:var(--m-node-stroke);stroke-width:1px;stroke-opacity:0.75}#md7fb3b__root .annotation-text{fill:var(--m-text);font-size:12px;font-weight:500;white-space:pre}</style>
+  <style data-mercat-style="diagram">#md7fb3b__root text{font-family:Google Sans Mono, Roboto Mono, monospace}</style>
+  <g class="mercat mercat-ascii">
+    <defs>
+      <marker id="md7fb3b__mk-arrow" refX="9.45" refY="3.4" markerWidth="10.8" markerHeight="6.8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path d="M 0 0 L 10.8 3.4 L 0 6.8 Z" class="m-marker" fill="var(--m-line)" stroke="none"/>
+      </marker>
+    </defs>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n0" data-role="step">
+      <rect x="15" y="80" width="773.5" height="132" class="m-shape outer-box"/>
+      <text x="397.5" y="113" class="m-label t-heading header-text" text-anchor="middle">1. DETERMINISTIC BACKEND PRE-PROCESSING LAYER (FastAPI / Web Server Engine)</text>
+      <text x="397.5" y="135" class="m-label t-heading header-text" text-anchor="middle">- Session Lifecycle Validation via Redis Cache (Recent Message Window)</text>
+      <text x="397.5" y="157" class="m-label t-heading header-text" text-anchor="middle">- Semantic Context Pre-Fetching &amp; Query Rewriting via Vector Chunks</text>
+      <text x="397.5" y="179" class="m-label t-heading header-text" text-anchor="middle">- Multi-Tier Memory Extraction (Episodic / Semantic / Long-Term) from Postgres</text>
+    </g>
+    <g class="m-group shape outer cluster" id="md7fb3b__group__g1" data-role="group">
+      <rect x="15" y="256" width="773.5" height="814" class="m-shape outer-box"/>
+      <line x1="15" y1="300" x2="788.5" y2="300" class="m-path divider-line"/>
+      <line x1="193.5" y1="564" x2="567.5" y2="564" class="m-path divider-line"/>
+      <line x1="729" y1="476" x2="729" y2="564" class="m-path divider-line"/>
+      <text x="397.5" y="278" class="m-label t-heading header-text" text-anchor="middle">2. ENTERPRISE MULTI-AGENT STATEGRAPH ORCHESTRATION</text>
+      <text x="597.25" y="355" class="m-label t-label label-text" text-anchor="middle">(Programmatic Graph Entry Filter)</text>
+      <text x="312.5" y="410" class="m-label t-label label-text" text-anchor="middle">Verified=False</text>
+      <text x="452.75" y="410" class="m-label t-label label-text" text-anchor="middle">Verified=True</text>
+      <text x="291.25" y="509" class="m-label t-label label-text" text-anchor="middle">Dynamic Routing Based</text>
+      <text x="465.5" y="531" class="m-label t-label label-text" text-anchor="middle">on Customer Intent</text>
+      <text x="316.75" y="839" class="m-label t-label label-text" text-anchor="middle">On-Demand</text>
+      <text x="384.75" y="839" class="m-label t-label label-text" text-anchor="middle">Calls</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n2" data-role="step">
+      <rect x="321" y="322" width="127.5" height="66" class="m-shape outer-box"/>
+      <text x="380.5" y="355" class="m-label t-heading header-text" text-anchor="middle">auth_gate</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n3" data-role="step">
+      <rect x="295.5" y="432" width="170" height="66" class="m-shape outer-box"/>
+      <text x="376.25" y="465" class="m-label t-heading header-text" text-anchor="middle">support_agent</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n4" data-role="step">
+      <rect x="100" y="608" width="187" height="88" class="m-shape outer-box"/>
+      <text x="189.25" y="641" class="m-label t-heading header-text" text-anchor="middle">normal_resp_gen</text>
+      <text x="189.25" y="663" class="m-label t-heading header-text" text-anchor="middle">(Sub-Node Generator)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n5" data-role="step">
+      <rect x="295.5" y="608" width="187" height="88" class="m-shape outer-box"/>
+      <text x="384.75" y="641" class="m-label t-heading header-text" text-anchor="middle">instruct_gen</text>
+      <text x="384.75" y="663" class="m-label t-heading header-text" text-anchor="middle">(Sub-Node Generator)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n6" data-role="step">
+      <rect x="491" y="608" width="187" height="88" class="m-shape outer-box"/>
+      <text x="580.25" y="641" class="m-label t-heading header-text" text-anchor="middle">billing_gen</text>
+      <text x="580.25" y="663" class="m-label t-heading header-text" text-anchor="middle">(Sub-Node Generator)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n7" data-role="step">
+      <rect x="100" y="740" width="578" height="66" class="m-shape outer-box"/>
+      <text x="384.75" y="773" class="m-label t-heading header-text" text-anchor="middle">mcp_client_routing_node</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n8" data-role="step">
+      <rect x="295.5" y="872" width="170" height="66" class="m-shape outer-box"/>
+      <text x="376.25" y="905" class="m-label t-heading header-text" text-anchor="middle">troubleshoot_agt</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n9" data-role="step">
+      <rect x="295.5" y="982" width="170" height="66" class="m-shape outer-box"/>
+      <text x="376.25" y="1015" class="m-label t-heading header-text" text-anchor="middle">eval_agent</text>
+    </g>
+    <g class="m-group shape outer cluster" id="md7fb3b__group__g10" data-role="group">
+      <rect x="15" y="1136" width="773.5" height="176" class="m-shape outer-box"/>
+      <line x1="15" y1="1180" x2="788.5" y2="1180" class="m-path divider-line"/>
+      <text x="397.5" y="1158" class="m-label t-heading header-text" text-anchor="middle">3. DECOUPLED MODEL CONTEXT PROTOCOL (MCP) PRODUCTION SERVERS</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n11" data-role="step">
+      <rect x="40.5" y="1202" width="263.5" height="88" class="m-shape outer-box"/>
+      <text x="168" y="1235" class="m-label t-heading header-text" text-anchor="middle">mcp_database_server</text>
+      <text x="168" y="1257" class="m-label t-heading header-text" text-anchor="middle">(Customers/Plans/Bills)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n12" data-role="step">
+      <rect x="312.5" y="1202" width="263.5" height="88" class="m-shape outer-box"/>
+      <text x="440" y="1235" class="m-label t-heading header-text" text-anchor="middle">mcp_twilio_sms_srv</text>
+      <text x="440" y="1257" class="m-label t-heading header-text" text-anchor="middle">(Outbound Alert Pipeline)</text>
+    </g>
+    <g class="m-node shape outer cluster" id="md7fb3b__node__n13" data-role="step">
+      <rect x="584.5" y="1202" width="187" height="88" class="m-shape outer-box"/>
+      <text x="673.75" y="1235" class="m-label t-heading header-text" text-anchor="middle">mcp_mail_receipts</text>
+      <text x="673.75" y="1257" class="m-label t-heading header-text" text-anchor="middle">(SMTP Notification</text>
+    </g>
+    <g class="m-node shape inner" id="md7fb3b__node__n14" data-role="step">
+      <rect x="17" y="15" width="217" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="125.5" y="25" class="m-label t-label label-text" text-anchor="middle">Raw Incoming User Turn</text>
+    </g>
+    <g class="m-node shape inner" id="md7fb3b__node__n15" data-role="step">
+      <rect x="518.5" y="1005" width="251" height="20" rx="3" ry="3" class="m-shape rect-pill"/>
+      <text x="644" y="1015" class="m-label t-label label-text" text-anchor="middle">Passes/Fails State Invariant</text>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n3__0" data-role="connector">
+      <line x1="733.25" y1="465" x2="466.85" y2="465" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n7__pt__0" data-role="connector">
+      <line x1="678" y1="773" x2="733.25" y2="773" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n9__n15__0" data-role="connector">
+      <line x1="465.5" y1="1015" x2="517.15" y2="1015" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n14__n0__0" data-role="connector">
+      <line x1="121.25" y1="35" x2="121.25" y2="78.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n4__0" data-role="connector">
+      <line x1="197.75" y1="586" x2="197.75" y2="606.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n4__n7__0" data-role="connector">
+      <line x1="197.75" y1="696" x2="197.75" y2="738.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n0__n2__0" data-role="connector">
+      <line x1="384.75" y1="212" x2="384.75" y2="254.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n2__n3__0" data-role="connector">
+      <line x1="384.75" y1="388" x2="384.75" y2="430.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n3__n5__0" data-role="connector">
+      <line x1="384.75" y1="498" x2="384.75" y2="606.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n5__0" data-role="connector">
+      <line x1="384.75" y1="586" x2="384.75" y2="606.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n8__n9__0" data-role="connector">
+      <line x1="380.5" y1="938" x2="380.5" y2="980.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n9__a1__0" data-role="connector">
+      <line x1="384.75" y1="1070" x2="384.75" y2="1095.6" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__a1__n12__0" data-role="connector">
+      <line x1="384.75" y1="1110.4" x2="384.75" y2="1136" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n9__a1__1" data-role="connector">
+      <line x1="384.75" y1="1070" x2="384.75" y2="1095.6" class="m-path arrow-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__a1__n12__1" data-role="connector">
+      <line x1="384.75" y1="1110.4" x2="384.75" y2="1134.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n5__n7__0" data-role="connector">
+      <line x1="389" y1="696" x2="389" y2="738.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n7__pt__1" data-role="connector">
+      <line x1="393.25" y1="806" x2="393.25" y2="831.15" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n8__0" data-role="connector">
+      <line x1="393.25" y1="846.85" x2="393.25" y2="872" class="m-path bus-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n7__pt__2" data-role="connector">
+      <line x1="393.25" y1="806" x2="393.25" y2="831.15" class="m-path arrow-line"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n8__1" data-role="connector">
+      <line x1="393.25" y1="846.85" x2="393.25" y2="870.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__n6__0" data-role="connector">
+      <line x1="571.75" y1="586" x2="571.75" y2="606.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__n6__n7__0" data-role="connector">
+      <line x1="588.75" y1="696" x2="588.75" y2="738.65" class="m-path arrow-line" marker-end="url(#md7fb3b__mk-arrow)"/>
+    </g>
+    <g class="m-edge" id="md7fb3b__edge__pt__pt__0" data-role="connector">
+      <line x1="733.25" y1="597" x2="733.25" y2="773" class="m-path bus-line"/>
+    </g>
+    <g class="m-node m-note" id="md7fb3b__note__a0" data-role="annotation">
+      <text x="397.5" y="245" class="m-label t-label annotation-text" text-anchor="start">Fully Hydrated Context State</text>
+    </g>
+    <g class="m-node m-note" id="md7fb3b__note__a1" data-role="annotation">
+      <text x="219" y="1103" class="m-label t-label annotation-text" text-anchor="start">Standardized JSON-RPC (Stdio/SSE Network Boundary)</text>
+    </g>
+  </g>
+</svg>
