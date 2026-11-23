@@ -12,7 +12,7 @@ resource "azurerm_postgresql_flexible_server" "main" {
   public_network_access_enabled = false
   backup_retention_days         = var.env == "prod" ? 35 : 7
   geo_redundant_backup_enabled  = var.env == "prod"
-  zone                          = "1"
+  zone                          = var.pg_zone == "" ? null : var.pg_zone # "" lets Azure choose a zone this subscription can use
 
   authentication {
     active_directory_auth_enabled = true

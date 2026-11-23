@@ -36,7 +36,8 @@ locals {
 resource "azapi_resource" "redis" {
   for_each = local.redis_clusters
 
-  type      = "Microsoft.Cache/redisEnterprise@2024-10-01"
+  # properties.publicNetworkAccess needs api-version 2025-07-01 or higher (2024-10-01 rejects it).
+  type      = "Microsoft.Cache/redisEnterprise@2025-07-01"
   name      = "redis-${each.key}-${local.name}-${local.suffix}"
   parent_id = azurerm_resource_group.main.id
   location  = azurerm_resource_group.main.location

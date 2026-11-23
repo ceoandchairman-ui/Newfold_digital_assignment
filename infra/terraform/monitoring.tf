@@ -66,7 +66,7 @@ resource "azurerm_monitor_data_collection_rule_association" "prometheus" {
 
 # --- Managed Grafana --------------------------------------------------------------------
 resource "azurerm_dashboard_grafana" "main" {
-  name                          = "grafana-${var.prefix}-${var.env}-${local.suffix}"
+  name                          = "amg-${var.prefix}-${var.env}-${local.suffix}" # max 23 chars
   resource_group_name           = azurerm_resource_group.main.name
   location                      = azurerm_resource_group.main.location
   grafana_major_version         = 11

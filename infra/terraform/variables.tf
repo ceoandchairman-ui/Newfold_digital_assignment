@@ -58,6 +58,12 @@ variable "pg_storage_mb" {
   default = 32768
 }
 
+variable "pg_zone" {
+  type        = string
+  default     = "1"
+  description = "Availability zone for the Postgres primary. Empty lets Azure choose (some subscriptions have no zone 1 in a region)."
+}
+
 variable "pg_high_availability" {
   type        = bool
   default     = false
