@@ -104,7 +104,7 @@ commonEnv:
   USE_STUB_GATEWAY: "true"      # the real payment gateway is still an open decision
 
 # Deployment environment name on every span (deployment.environment.name).
-environment: dev
+environment: prod
 
 # OpenTelemetry Collector (E12-B5). The App Insights connection string is the Kubernetes secret
 # `otel-azuremonitor` (key connection-string), created by the deploy pipeline from Terraform output.
@@ -119,8 +119,8 @@ otel:
     limits: { memory: 1Gi }
 
 # `id-<identityPrefix>-<service>` is each workload identity's name AND its Postgres role name.
-# Terraform output `identity_prefix` (support-dev / support-prod); set by the pipeline.
-identityPrefix: support-dev
+# Terraform output `identity_prefix` (support-prod); set by the pipeline.
+identityPrefix: support-prod
 
 # Must match the embedder (D3): migration 0002 sizes vector(N) from it.
 embeddingDim: "1024"
@@ -130,7 +130,7 @@ dbBootstrap:
   clientId: ""    # terraform output workload_identity_client_ids["db-bootstrap"]
   objectId: ""
 
-# Load seed/example_seed.toml as part of the pre-deploy hook. The pipeline turns this on for dev only.
+# Load seed/example_seed.toml as part of the pre-deploy hook. Off in production unless the SEED_DEMO_DATA repository variable is true.
 seed:
   enabled: false
 

@@ -56,9 +56,9 @@ uv run pytest tests/integration -v
 1. **Bootstrap** (as an Azure Owner, once): `cd infra/bootstrap && terraform init && terraform apply -var github_repository=<owner/repo>`.
    It creates the Terraform state storage, a shared container registry, and two GitHub OIDC identities (`plan`: read-only, `apply`: can deploy) with no stored secrets.
 2. **Copy its outputs:**
-   - `backend_config` into `infra/terraform/envs/{dev,prod}.backend.hcl`;
+   - `backend_config` into `infra/terraform/envs/prod.backend.hcl`;
    - `main_tfvars` into `envs/*.tfvars` (and set `pg_admin_object_id` there, an Entra group for Postgres admins);
-   - `github_variables` into GitHub: create the environments `dev`, `production`, `plan-dev`, `plan-prod`, set the variables (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, `AZURE_CLIENT_ID` per environment, `SMOKE_PHONE`, `SMOKE_DOB`), and add required reviewers on `production`.
+   - `github_variables` into GitHub: create the environments `build`, `plan-prod`, `production`, set the variables (`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, `AZURE_CLIENT_ID` per environment, `PG_ADMIN_OBJECT_ID`, `PG_ADMIN_NAME`; optionally `SEED_DEMO_DATA=true` with `SMOKE_PHONE`, `SMOKE_DOB`), and add required reviewers on `production`.
 3. **One secret:** add `EMBEDDER_API_KEY` as a GitHub secret (it comes from the embedder provider).
 4. **Decisions** I did not have: the embedder provider URL, the region and Azure OpenAI quota (`envs/*.tfvars`), and the CODEOWNERS teams.
 
@@ -67,17 +67,17 @@ uv run pytest tests/integration -v
 ```
 build image -> sign + SBOM -> [plan] -> (approval) -> apply the reviewed plan
    -> verify signature -> helm upgrade --atomic, in the PRIVATE cluster via `az aks command invoke`
-        pre-deploy hook:  migrations -> a Postgres role per service (least privilege) -> demo seed (dev only)
+        pre-deploy hook:  migrations -> a Postgres role per service (least privilege) -> demo seed (only if SEED_DEMO_DATA=true)
    -> smoke test -> dashboards
 ```
 
 A failed smoke test rolls the release back and stops promotion to prod. Secrets reach pods through the Key Vault CSI driver. The cluster API is private, so the runner never talks to it directly.
 
-**Try it** (the dev environment is seeded with the demo data, so C1002 owes bill B1005):
+**Try it** (with SEED_DEMO_DATA=true the demo data is loaded, so C1002 owes bill B1005):
 
 ```bash
-python -m support_assistant.cli https://<dev-backend-host>   # verify, chat, approve a payment
-python -m support_assistant.loadtest https://<dev> +15550001 1990-05-01 50 10   # latency baseline
+python -m support_assistant.cli https://<backend-host>   # verify, chat, approve a payment
+python -m support_assistant.loadtest https://<backend-host> +15550001 1990-05-01 50 10   # latency baseline
 ```
 
 > **Not yet run:** none of this has executed against a real subscription. Expect the first pipeline run to need fixes. The bootstrap, Terraform, chart and workflows have been validated (`terraform validate`, `helm lint` and render, workflow parsing) but not applied.

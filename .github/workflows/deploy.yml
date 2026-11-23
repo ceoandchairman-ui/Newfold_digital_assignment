@@ -1,6 +1,7 @@
-# Build once, promote the same image: dev on every merge to main, prod after manual approval (E10-14).
-# Prod approval is enforced by the GitHub "production" environment's required reviewers.
-# Azure access uses OpenID Connect (federated credentials), never stored secrets.
+# Build once, then deploy to production, the only environment (there is no dev).
+# Approval is enforced by the GitHub "production" environment's required reviewers, AFTER the
+# Terraform plan is visible. Azure access uses OpenID Connect (federated credentials), never
+# stored secrets.
 name: deploy
 on:
   push:
@@ -18,7 +19,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: dev
+    environment: build   # no reviewers: building an image changes nothing in production
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -51,18 +52,10 @@ jobs:
           cosign sign --yes "$REF"
           cosign attest --yes --type cyclonedx --predicate sbom.cdx.json "$REF"
 
-  deploy-dev:
+  deploy-prod:
     needs: build
     uses: ./.github/workflows/deploy-env.yml
     with:
-      environment: dev
-      tag: ${{ needs.build.outputs.tag }}
-    secrets: inherit
-
-  deploy-prod:
-    needs: [build, deploy-dev]
-    uses: ./.github/workflows/deploy-env.yml
-    with:
-      environment: production   # required reviewers gate this job
+      environment: production   # required reviewers gate the apply job
       tag: ${{ needs.build.outputs.tag }}
     secrets: inherit

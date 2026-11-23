@@ -19,12 +19,12 @@ permissions:
   contents: read
 
 env:
-  TF_ENV: ${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+  TF_ENV: prod   # the only environment
 
 jobs:
   plan:
     runs-on: ubuntu-latest
-    environment: plan-${{ inputs.environment == 'production' && 'prod' || 'dev' }}
+    environment: plan-prod
     defaults:
       run:
         working-directory: infra/terraform
@@ -33,6 +33,9 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_pg_admin_object_id: ${{ vars.PG_ADMIN_OBJECT_ID }}
+      TF_VAR_pg_admin_name: ${{ vars.PG_ADMIN_NAME }}
+      TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -54,7 +57,7 @@ jobs:
   apply:
     needs: plan
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}   # required reviewers gate prod here, AFTER the plan is visible
+    environment: ${{ inputs.environment }}   # required reviewers gate production here, AFTER the plan is visible
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -63,8 +66,14 @@ jobs:
       IMAGE_REPO: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant
       IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/support-assistant:${{ inputs.tag }}
       ENFORCE_SIGNING: ${{ vars.ENFORCE_SIGNING || 'false' }}
+      # The smoke journey logs in as a seeded demo customer, so it runs only when demo data is seeded.
+      SMOKE_PHONE: ${{ vars.SEED_DEMO_DATA == 'true' && vars.SMOKE_PHONE || '' }}
+      SMOKE_DOB: ${{ vars.SEED_DEMO_DATA == 'true' && vars.SMOKE_DOB || '' }}
       EMBEDDER_URL: ${{ vars.EMBEDDER_URL }}   # the embedder provider's /v1 base URL (a decision)
-      SEED_DEMO_DATA: ${{ inputs.environment == 'production' && 'false' || 'true' }}   # never seed prod
+      SEED_DEMO_DATA: ${{ vars.SEED_DEMO_DATA || 'false' }}   # production: demo customers only if you opt in
+      TF_VAR_pg_admin_object_id: ${{ vars.PG_ADMIN_OBJECT_ID }}
+      TF_VAR_pg_admin_name: ${{ vars.PG_ADMIN_NAME }}
+      TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -145,7 +154,7 @@ jobs:
 
       - name: Smoke test (blocks promotion on failure)
         run: |
-          scripts/aks_invoke.sh "kubectl -n support run smoke-${{ inputs.tag }} --rm -i --restart=Never --labels app=smoke-test --image ${IMAGE} --env SMOKE_PHONE=${{ vars.SMOKE_PHONE }} --env SMOKE_DOB=${{ vars.SMOKE_DOB }} -- python -m support_assistant.smoke"
+          scripts/aks_invoke.sh "kubectl -n support run smoke-${{ inputs.tag }} --rm -i --restart=Never --labels app=smoke-test --image ${IMAGE} --env SMOKE_PHONE=${SMOKE_PHONE} --env SMOKE_DOB=${SMOKE_DOB} -- python -m support_assistant.smoke"
 
       - name: Roll back on a failed smoke test
         if: failure()

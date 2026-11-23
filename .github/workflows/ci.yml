@@ -119,7 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: sbom, path: sbom.cdx.json }
 
-  # Terraform plan for both environments, posted on the pull request (E11-A2). Read-only identity.
+  # Terraform plan for production (the only environment), posted on the pull request (E11-A2). Read-only identity.
   plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -129,7 +129,7 @@ jobs:
       pull-requests: write
     strategy:
       matrix:
-        env: [dev, prod]
+        env: [prod]
     environment: plan-${{ matrix.env }}   # holds the plan-only (Reader) OIDC identity
     defaults:
       run:
@@ -139,6 +139,9 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_pg_admin_object_id: ${{ vars.PG_ADMIN_OBJECT_ID }}
+      TF_VAR_pg_admin_name: ${{ vars.PG_ADMIN_NAME }}
+      TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3

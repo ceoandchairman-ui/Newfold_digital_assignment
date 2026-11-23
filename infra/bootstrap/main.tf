@@ -1,7 +1,7 @@
 # One-time bootstrap (run by an Owner, locally or from Cloud Shell). It creates what the pipeline
 # needs BEFORE it can run at all:
 #   1. remote Terraform state storage (Entra auth only, versioned),
-#   2. one shared container registry (dev and prod pull the same signed image),
+#   2. one shared container registry (the pipeline builds, signs and deploys one image),
 #   3. two GitHub OIDC identities: `plan` (read-only) and `apply` (can deploy), with no secrets.
 
 data "azurerm_client_config" "current" {}
@@ -18,9 +18,8 @@ locals {
 
   # GitHub environment name -> which identity it signs in as. plan-* environments are read-only.
   federated = {
-    "plan-dev"         = { app = "plan", environment = "plan-dev" }
     "plan-prod"        = { app = "plan", environment = "plan-prod" }
-    "apply-dev"        = { app = "apply", environment = "dev" }
+    "apply-build"      = { app = "apply", environment = "build" }
     "apply-production" = { app = "apply", environment = "production" }
   }
 }

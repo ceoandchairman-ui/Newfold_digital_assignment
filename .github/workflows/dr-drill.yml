@@ -1,6 +1,6 @@
 # Disaster-recovery drill (E10-17, E11-A10): restore Postgres to a point in time, into a NEW server,
 # and time it against the recovery-time target (docs/disaster_recovery.md: 1 hour). Runs monthly
-# in dev. It never touches the live server, and always deletes the drill server afterwards.
+# in production. It never touches the live server, and always deletes the drill server afterwards.
 #
 # It proves the restore itself works and measures how long it takes. It does not inspect the
 # restored data: that needs network access to the private server, which a runner does not have.
@@ -20,12 +20,12 @@ permissions:
 
 env:
   RTO_MINUTES: "60"            # the proposed recovery-time target
-  RESOURCE_GROUP: rg-support-dev
+  RESOURCE_GROUP: rg-support-prod
 
 jobs:
   postgres-restore:
     runs-on: ubuntu-latest
-    environment: dev
+    environment: production   # NOTE: the production reviewers must approve each drill run
     timeout-minutes: 120
     steps:
       - uses: azure/login@v2
@@ -36,7 +36,7 @@ jobs:
 
       - name: Find the live server and its network settings
         run: |
-          SRC="$(az postgres flexible-server list -g "$RESOURCE_GROUP" --query "[?starts_with(name,'pg-support-dev')].name | [0]" -o tsv)"
+          SRC="$(az postgres flexible-server list -g "$RESOURCE_GROUP" --query "[?starts_with(name,'pg-support-prod')].name | [0]" -o tsv)"
           [ -n "$SRC" ] || { echo "no source server found"; exit 1; }
           SUBNET="$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$SRC" --query network.delegatedSubnetResourceId -o tsv)"
           DNS="$(az postgres flexible-server show -g "$RESOURCE_GROUP" -n "$SRC" --query network.privateDnsZoneArmResourceId -o tsv)"

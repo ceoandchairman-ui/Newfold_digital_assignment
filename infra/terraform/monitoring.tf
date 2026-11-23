@@ -69,7 +69,7 @@ resource "azurerm_dashboard_grafana" "main" {
   name                          = "amg-${var.prefix}-${var.env}-${local.suffix}" # max 23 chars
   resource_group_name           = azurerm_resource_group.main.name
   location                      = azurerm_resource_group.main.location
-  grafana_major_version         = 11
+  grafana_major_version         = 12
   public_network_access_enabled = true # Entra sign-in protects it; set false with a private endpoint in prod
   tags                          = local.tags
 

@@ -1,6 +1,6 @@
 variable "env" {
   type        = string
-  description = "Environment name (dev or prod)."
+  description = "Environment name. There is a single environment, prod; it names the resources."
 }
 
 variable "location" {
@@ -62,6 +62,18 @@ variable "pg_zone" {
   type        = string
   default     = "1"
   description = "Availability zone for the Postgres primary. Empty lets Azure choose (some subscriptions have no zone 1 in a region)."
+}
+
+variable "pg_admin_type" {
+  type        = string
+  default     = "User"
+  description = "User or Group: what pg_admin_object_id refers to. Prefer a Group."
+}
+
+variable "redis_high_availability" {
+  type        = bool
+  default     = false
+  description = "Zone-redundant Azure Managed Redis. Needs usable availability zones in the region; fixed at creation."
 }
 
 variable "pg_high_availability" {

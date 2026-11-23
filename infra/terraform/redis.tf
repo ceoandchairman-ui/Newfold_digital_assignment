@@ -52,7 +52,15 @@ resource "azapi_resource" "redis" {
     properties = {
       minimumTlsVersion   = "1.2"
       publicNetworkAccess = "Disabled"
+      # Zone-redundant HA is a switch (redis_high_availability): a subscription without usable
+      # zones in the region makes the create hang and then fail. It cannot be changed afterwards.
+      highAvailability = var.redis_high_availability ? "Enabled" : "Disabled"
     }
+  }
+
+  timeouts {
+    create = "90m"
+    update = "90m"
   }
 
   response_export_values = ["properties.hostName"]

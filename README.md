@@ -13,13 +13,13 @@ A LangGraph orchestrator with Microsoft Agent Framework agents, MCP servers, Pos
 | `src/support_assistant/mcp_catalog.py` | The contract both sides share: servers, ports and tools |
 | `src/support_assistant/services/`, `domain/` | Payments, retrieval, episodes; pure business rules |
 | `migrations/` | Alembic migrations (plain SQL) |
-| `infra/terraform/` | All Azure resources, with `envs/dev` and `envs/prod` |
+| `infra/terraform/` | All Azure resources, with a single environment, `envs/prod` |
 | `deploy/helm/support/` | One Deployment per service, plus policies, quota, ingress and CronJobs |
 | `docs/` | Backlog, requirements, DR, spikes, example transcripts |
 
 ## Development workflow (E10-15)
 
-Nothing runs locally. Code is written and reviewed on your machine, checked in CI, and runs in the Azure dev environment.
+Nothing runs locally. Code is written and reviewed on your machine, checked in CI, and runs in Azure. There is one environment, production.
 
 1. **Before pushing:** run the same checks CI runs. Tests use fakes and need no services.
    ```
@@ -28,16 +28,16 @@ Nothing runs locally. Code is written and reviewed on your machine, checked in C
    ```
 2. **Pull request:** `ci.yml` runs lint, types, tests, `terraform validate`, `helm lint` and an image build.
 3. **Merge to `main`:** `deploy.yml` builds one image, then:
-   - deploys it to **dev**: Terraform apply, migrations, then Helm;
-   - promotes the **same image** to **prod**, after a required reviewer approves the `production` environment.
-4. **Try it in dev:** run `python -m support_assistant.cli https://<dev-backend>`.
+   - plans the Terraform change and shows it for review;
+   - after a required reviewer approves the `production` environment, applies exactly that plan, runs migrations, then Helm, then a smoke test.
+4. **Try it:** run `python -m support_assistant.cli https://<backend>`.
 
 `.env.example` lists every setting the services read from their environment.
 
 ## Before the first deployment
 
-- Create the Terraform state storage account, and fill in `envs/*.backend.hcl`.
-- Set the Entra admin group object ID in `envs/*.tfvars`.
+- Create the Terraform state storage account, and fill in `envs/prod.backend.hcl`.
+- Set the repository variables `PG_ADMIN_OBJECT_ID`, `PG_ADMIN_NAME` and (for a group) `PG_ADMIN_TYPE=Group`: the Postgres Entra administrator.
 - Name the embedder and reranker provider (D3, D18). The migrations need `EMBEDDING_DIM=1024`.
 - Set the region (D15) and confirm the Azure OpenAI quota there.
-- Create the GitHub `dev` and `production` environments. They need the variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, `RESOURCE_GROUP` and `AKS_NAME`, and `production` needs required reviewers.
+- Create the GitHub `build`, `plan-prod` and `production` environments, with the variables `AZURE_CLIENT_ID` (per environment), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and `ACR_NAME`. `production` needs required reviewers.

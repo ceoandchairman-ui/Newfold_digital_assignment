@@ -43,7 +43,13 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "ad
   tenant_id           = data.azurerm_client_config.current.tenant_id
   object_id           = var.pg_admin_object_id
   principal_name      = var.pg_admin_name
-  principal_type      = "User"
+  principal_type      = var.pg_admin_type
+
+  lifecycle {
+    # Azure stores the principal name cut to 64 characters, which would otherwise force a
+    # replacement of the administrator on every plan.
+    ignore_changes = [principal_name]
+  }
 }
 
 # pgvector must be allow-listed before CREATE EXTENSION works (E1-1).
