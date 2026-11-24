@@ -51,12 +51,12 @@ class Env:
 
         self.graph = build_graph(client, pay, MemorySaver(), retriever=self.retriever)
 
-    def state(self, customer: str, text: str, route: str = "billing", verified: bool = True):
+    def state(self, customer: str, text: str, route: str = "BILLING", verified: bool = True):
         return {
             "customer_id": customer,
             "session_id": f"S-{customer}",
             "identity_verified": verified,
-            "route": route,
+            "route_hint": route,
             "messages": [{"role": "user", "content": text}],
             "search_query": text if route == "troubleshoot" else None,
             "proposed_action": None,
@@ -91,7 +91,7 @@ async def test_journey2_apn_troubleshooting(monkeypatch):
     )
     e = Env(monkeypatch, docs=[doc])
     out = await e.graph.ainvoke(
-        e.state("C1001", "my data does not work", route="troubleshoot"), e.cfg("C1001")
+        e.state("C1001", "my data does not work", route="TROUBLESHOOT"), e.cfg("C1001")
     )
     assert "APN" in out["reply"] and e.retriever.seen == ["my data does not work"]
 
@@ -164,5 +164,5 @@ async def test_injected_reference_text_is_dropped_and_escalates(monkeypatch):
         metadata={"section_id": "9.9", "heading_path": "x"},
     )
     e = Env(monkeypatch, docs=[bad])
-    out = await e.graph.ainvoke(e.state("C1001", "no signal", route="troubleshoot"), e.cfg("C1001"))
+    out = await e.graph.ainvoke(e.state("C1001", "no signal", route="TROUBLESHOOT"), e.cfg("C1001"))
     assert out["reply"] == ESCALATION_MESSAGE

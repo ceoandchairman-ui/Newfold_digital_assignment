@@ -8,13 +8,30 @@ from contextlib import asynccontextmanager
 import pytest
 
 from support_assistant.errors import NotFoundError
-from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, COMMS, CRM, DATABASE, DEVICE
+from support_assistant.integrations.google_providers import StubDocuments, StubEmail
+from support_assistant.integrations.twilio_client import StubSms
+from support_assistant.mcp_catalog import (
+    ACCOUNT,
+    ALL_SERVERS,
+    COMMS,
+    CRM,
+    DATABASE,
+    DEVICE,
+    DRIVE,
+    GMAIL,
+    STRIPE,
+    TWILIO,
+)
 from support_assistant.mcp_servers.account import build_account_server
 from support_assistant.mcp_servers.common import plain, safe
 from support_assistant.mcp_servers.comms import build_comms_server
 from support_assistant.mcp_servers.crm import build_crm_server
 from support_assistant.mcp_servers.database import build_database_server
 from support_assistant.mcp_servers.device import build_device_server
+from support_assistant.mcp_servers.drive import build_drive_server
+from support_assistant.mcp_servers.gmail import build_gmail_server
+from support_assistant.mcp_servers.stripe_server import build_stripe_server
+from support_assistant.mcp_servers.twilio_sms import build_twilio_server
 from support_assistant.notifications import LogOutbox
 from support_assistant.services.payments import StubGateway
 
@@ -34,6 +51,10 @@ def servers():
         DEVICE.name: build_device_server(),
         ACCOUNT.name: build_account_server(FakePool()),
         CRM.name: build_crm_server(FakePool()),
+        TWILIO.name: build_twilio_server(FakePool(), StubSms()),
+        STRIPE.name: build_stripe_server(FakePool(), StubGateway()),
+        GMAIL.name: build_gmail_server(FakePool(), StubEmail()),
+        DRIVE.name: build_drive_server(StubDocuments()),
     }
 
 

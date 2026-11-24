@@ -118,6 +118,9 @@ variable "openai_deployments" {
     model_name    = string
     model_version = string
     capacity_k    = number # thousand tokens per minute
+    # GPT-5.x models may need a different deployment type than Standard in your region. Confirm in
+    # the Foundry portal ("Standard" or "GlobalStandard") before the first apply.
+    sku_name = optional(string, "Standard")
   }))
 }
 

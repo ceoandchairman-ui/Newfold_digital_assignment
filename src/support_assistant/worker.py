@@ -85,6 +85,29 @@ async def handle_message(
     return Outcome.COMPLETE
 
 
+def _sms_sender(settings: Settings) -> SmsSender:
+    """The configured SMS provider: Twilio, or Azure Communication Services (the default)."""
+    if settings.sms_provider == "twilio":
+        return _twilio_sender(settings)
+    return _acs_sender(settings)
+
+
+def _twilio_sender(settings: Settings) -> SmsSender:
+    from support_assistant.integrations.twilio_client import build_sms_provider
+
+    provider = build_sms_provider(settings)  # a stub until Twilio is configured
+
+    async def send(phone: str, text: str) -> None:
+        try:
+            await provider.send(phone, text)
+        except ExternalServiceUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ExternalServiceUnavailable("sms provider unavailable") from exc
+
+    return send
+
+
 def _acs_sender(settings: Settings) -> SmsSender:
     """Communication Services SMS, or a log-only sender while use_stub_sms is on."""
     if settings.use_stub_sms:
@@ -153,7 +176,7 @@ async def run() -> None:
         raise RuntimeError("SERVICEBUS_NAMESPACE_FQDN is required")
     pool = make_pool(settings)
     await pool.open()
-    sender = _acs_sender(settings)
+    sender = _sms_sender(settings)
     email_sender = _email_sender(settings)
 
     async def lookup(customer_id: str) -> str:

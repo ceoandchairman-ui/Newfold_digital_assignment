@@ -22,7 +22,7 @@ from support_assistant import telemetry
 from support_assistant.agents.mcp_client import McpRegistry
 from support_assistant.contracts import AgentRequest, AgentResponse
 from support_assistant.errors import ExternalServiceUnavailable
-from support_assistant.mcp_catalog import ACCOUNT, COMMS, CRM, DATABASE, DEVICE
+from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, COMMS, CRM, DATABASE, DEVICE
 from support_assistant.observability import REQUEST_ID_HEADER, RequestContextMiddleware
 from support_assistant.orchestrator.graph import build_graph
 
@@ -130,6 +130,8 @@ URLS = {
     ACCOUNT.name: "account",
     CRM.name: "crm",
 }
+for _s in ALL_SERVERS:  # a server the tests do not name still needs a URL
+    URLS.setdefault(_s.name, f"http://{_s.name}")
 
 
 async def test_mcp_calls_are_client_spans_with_rpc_attributes():
@@ -172,7 +174,7 @@ def _state() -> dict[str, Any]:
         "customer_id": "C1",
         "session_id": "S",
         "identity_verified": True,
-        "route": "billing",
+        "route_hint": "BILLING",
         "messages": [{"role": "user", "content": "pay"}],
         "proposed_action": None,
         "eval_attempts": 0,
@@ -191,7 +193,7 @@ async def test_every_node_is_a_span_and_an_approval_pause_is_not_an_error():
     assert approve[-1].status.status_code is not StatusCode.ERROR
     assert {
         "graph.node auth_gate",
-        "graph.node support_agent",
+        "graph.node route",
         "graph.node billing_gen",
         "graph.node eval_agent",
     } <= {s.name for s in _spans("graph.node")}
@@ -203,5 +205,5 @@ async def test_the_payment_node_is_tagged_so_the_collector_keeps_every_payment_t
     await graph.ainvoke(_state(), cfg)
     EXPORTER.clear()
     await graph.ainvoke(Command(resume={"approved": True}, update={"audit": None}), cfg)
-    (pay,) = _spans("graph.node mcp_client_routing_node")
+    (pay,) = _spans("graph.node pay")
     assert pay.attributes["support.payment"] is True

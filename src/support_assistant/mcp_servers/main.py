@@ -1,9 +1,10 @@
-"""Launcher: one container, five MCP servers on five ports (D12, E8-8).
+"""Launcher: one container, nine MCP servers on nine ports (D12, E8-8).
 
     python -m support_assistant.mcp_servers.main
 
-database (8001), comms (8002), device_diagnostics (8003), account_management (8004) and crm (8005)
-share this process and the Postgres pool. Each is built by its own factory in this package; this
+database (8001), comms (8002), device_diagnostics (8003), account_management (8004), crm (8005),
+twilio_sms (8006), stripe (8007), gmail (8008) and google_drive (8009) share this process and the
+Postgres pool. Each is built by its own factory in this package; this
 file only wires and serves them.
 """
 
@@ -18,15 +19,24 @@ from mcp.server.fastmcp import FastMCP
 
 from support_assistant.config import Settings, get_settings
 from support_assistant.db import make_pool
+from support_assistant.integrations.google_providers import (
+    build_document_provider,
+    build_email_provider,
+)
+from support_assistant.integrations.stripe_gateway import build_gateway
+from support_assistant.integrations.twilio_client import build_sms_provider
 from support_assistant.mcp_servers.account import build_account_server
 from support_assistant.mcp_servers.comms import build_comms_server
 from support_assistant.mcp_servers.crm import build_crm_server
 from support_assistant.mcp_servers.database import build_database_server
 from support_assistant.mcp_servers.device import build_device_server
+from support_assistant.mcp_servers.drive import build_drive_server
+from support_assistant.mcp_servers.gmail import build_gmail_server
+from support_assistant.mcp_servers.stripe_server import build_stripe_server
+from support_assistant.mcp_servers.twilio_sms import build_twilio_server
 from support_assistant.notifications import LogOutbox, Outbox, ServiceBusOutbox
 from support_assistant.redis_factory import make_redis
 from support_assistant.services.device_sim import RedisDeviceStore
-from support_assistant.services.payments import StubGateway
 from support_assistant.telemetry import instrument_asgi, setup_telemetry
 
 log = structlog.get_logger()
@@ -77,7 +87,7 @@ async def main() -> None:
     settings = get_settings()
     setup_telemetry("mcp-servers")
     pool = make_pool(settings)
-    gateway = StubGateway()  # the real payment gateway is an open decision (use_stub_gateway)
+    gateway = build_gateway(settings)  # Stripe when switched on and configured, else the stub
     servers = [
         build_database_server(pool, gateway),
         build_comms_server(build_outbox(settings)),
@@ -86,6 +96,10 @@ async def main() -> None:
         ),
         build_account_server(pool),
         build_crm_server(pool),
+        build_twilio_server(pool, build_sms_provider(settings)),
+        build_stripe_server(pool, gateway),
+        build_gmail_server(pool, build_email_provider(settings)),
+        build_drive_server(build_document_provider(settings)),
     ]
     await pool.open()
     try:

@@ -1,4 +1,4 @@
-"""Tier routing, the LangChain retriever, and the graph's auth_gate and retrieve nodes."""
+"""The LangChain retriever, and the graph's auth_gate and retrieve nodes."""
 
 from typing import Any
 
@@ -6,85 +6,9 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langgraph.checkpoint.memory import MemorySaver
 
-from support_assistant.agents.llm import Tier, TieredLLM, pick_tier
 from support_assistant.contracts import AgentRequest, AgentResponse
 from support_assistant.embeddings import FakeEmbedder
 from support_assistant.orchestrator.graph import build_graph
-
-
-# --- tier routing -----------------------------------------------------------------------
-class Recorder:
-    def __init__(self, name: str, fail: bool = False) -> None:
-        self.name, self.fail, self.calls = name, fail, 0
-
-    async def respond(self, instructions: str, facts: str, user_message: str) -> str:
-        self.calls += 1
-        if self.fail:
-            raise RuntimeError("down")
-        return self.name
-
-
-def test_easy_turns_pick_small_and_hard_turns_pick_large():
-    assert pick_tier("No unpaid bills.", "what is my plan") is Tier.SMALL
-    assert pick_tier("bill B1 overdue", "hi") is Tier.LARGE
-    assert pick_tier("x" * 700, "hi") is Tier.LARGE
-    assert pick_tier("Proposed: pay bill B1", "pay it") is Tier.LARGE
-
-
-async def test_router_uses_the_cheap_model_for_easy_turns():
-    small, large = Recorder("small"), Recorder("large")
-    llm = TieredLLM(small, large)
-    assert await llm.respond("i", "No unpaid bills.", "what is my plan") == "small"
-    assert (small.calls, large.calls) == (1, 0)
-
-
-async def test_router_uses_large_for_hard_and_falls_back_when_small_fails():
-    small, large = Recorder("small"), Recorder("large")
-    llm = TieredLLM(small, large)
-    assert await llm.respond("i", "bill B1 overdue", "why") == "large"
-    assert small.calls == 0
-
-    broken_small = Recorder("small", fail=True)
-    llm2 = TieredLLM(broken_small, large)
-    assert await llm2.respond("i", "No unpaid bills.", "plan?") == "large"
-    assert llm2.last_tier is Tier.LARGE
-
-
-# --- optional reasoning tier --------------------------------------------------------------
-def test_reasoning_tier_is_never_picked_unless_a_reasoning_model_is_configured():
-    assert pick_tier("customer disputes bill B1", "refund me") is Tier.LARGE
-    assert (
-        pick_tier("customer disputes bill B1", "refund me", reasoning_available=True)
-        is Tier.REASONING
-    )
-    # ordinary hard turns (overdue, long) stay on the large model even when reasoning exists
-    assert pick_tier("bill B1 overdue", "hi", reasoning_available=True) is Tier.LARGE
-    assert pick_tier("No unpaid bills.", "plan?", reasoning_available=True) is Tier.SMALL
-
-
-async def test_reasoning_model_answers_disputes_and_large_covers_for_it_when_it_fails():
-    small, large, reasoning = Recorder("small"), Recorder("large"), Recorder("reasoning")
-    llm = TieredLLM(small, large, reasoning)
-    assert await llm.respond("i", "bill B1", "I want to dispute this charge") == "reasoning"
-    assert (small.calls, large.calls) == (0, 0)
-
-    llm2 = TieredLLM(small, large, Recorder("reasoning", fail=True))
-    assert await llm2.respond("i", "bill B1", "refund please") == "large"
-    assert llm2.last_tier is Tier.LARGE
-
-
-async def test_without_a_reasoning_model_disputes_use_large_as_before():
-    small, large = Recorder("small"), Recorder("large")
-    assert await TieredLLM(small, large).respond("i", "bill B1", "dispute this") == "large"
-
-
-def test_query_rewrite_runs_on_the_small_model_with_a_short_timeout_by_default():
-    from support_assistant.config import Settings
-
-    fields = Settings.model_fields
-    assert fields["azure_openai_rewrite_deployment"].default == "chat-small"
-    assert fields["rewrite_timeout_seconds"].default <= 2
-    assert fields["azure_openai_reasoning_deployment"].default is None
 
 
 # --- graph: auth_gate and retrieve node -----------------------------------------------------
@@ -131,12 +55,12 @@ class CapturingClient:
         return AgentResponse(reply="ok")
 
 
-def _state(verified: bool = True, route: str = "troubleshoot") -> dict[str, Any]:
+def _state(verified: bool = True, route: str = "TROUBLESHOOT") -> dict[str, Any]:
     return {
         "customer_id": "C1",
         "session_id": "S1",
         "identity_verified": verified,
-        "route": route,
+        "route_hint": route,
         "messages": [{"role": "user", "content": "no signal"}],
         "search_query": "mobile no signal",
         "proposed_action": None,

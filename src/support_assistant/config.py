@@ -8,6 +8,9 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# How hard a reasoning model thinks before answering. More effort is slower and costs more.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -46,6 +49,9 @@ class Settings(BaseSettings):
     # Short-term memory window in Redis (E2-6, D6)
     redis_window_size: int = Field(20, ge=1, description="Max messages kept in the hot window")
     redis_session_ttl_s: int = Field(1800, ge=60, description="Short TTL; Postgres is the truth")
+    # Earlier conversations (other sessions) offered as context on a session's first turn.
+    history_days: int = Field(5, ge=0, le=30, description="0 turns cross-session history off")
+    history_max_sessions: int = Field(5, ge=1, le=10)
 
     # --- Embeddings / LLM ----------------------------------------------------
     # D3: BGE-M3 via a managed OpenAI-compatible API. 1024 dims fits pgvector HNSW (limit 2000).
@@ -58,22 +64,30 @@ class Settings(BaseSettings):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_candidates: int = Field(20, ge=1)
     azure_openai_endpoint: str | None = None
-    azure_openai_api_version: str = "2024-10-21"
+    # PLACEHOLDER, NOT VERIFIED: GPT-5.x needs a newer version than 2024-10-21. Two settings because
+    # the agents (Agent Framework, Responses API) and the query rewrite (LangChain, Chat Completions)
+    # are different clients, and one may need a different version than the other.
+    azure_openai_api_version: str = "2025-04-01-preview"  # the agents
+    azure_openai_chat_api_version: str = "2025-04-01-preview"  # the query rewrite
     # Shared small tier for easy turns (D19). Empty disables tiering: the agent's own model is used.
-    azure_openai_small_deployment: str = "chat-small"
-    # Optional reasoning tier for the hardest turns (disputes, refunds, cancellations). Unset means
-    # off: those turns stay on the agent's large chat model. Set it only after a reasoning
-    # deployment exists and has quota (it is slower, so it is never the default).
-    azure_openai_reasoning_deployment: str | None = None
-    # Which deployment answers each task. Every task has its own setting so one can be changed
-    # without touching the others. Defaults use the deployments Terraform already creates.
-    #   query rewrite -> short, fast, temperature 0: the small model, with a hard timeout.
-    azure_openai_rewrite_deployment: str = "chat-small"
+    # --- Model roles (models.py): one deployment per job, each with its own reasoning effort. ---
+    # Terraform creates the deployments and pins the model behind each name. Effort applies to
+    # reasoning models; set it to None for a model that has no such setting.
+    llm_chat_deployment: str = "chat-support"  # support_agent: conversation, generic questions
+    llm_chat_effort: ReasoningEffort | None = "low"
+    llm_planner_deployment: str = "chat-planner"  # support_agent: reasoning and task questions
+    llm_planner_effort: ReasoningEffort | None = "medium"
+    llm_rewrite_deployment: str = "chat-rewrite"  # fat backend: query rewrite
+    llm_rewrite_effort: ReasoningEffort | None = "minimal"
+    llm_troubleshooter_deployment: str = "chat-troubleshooter"  # troubleshoot_agent
+    llm_troubleshooter_effort: ReasoningEffort | None = "medium"
+    llm_judge_deployment: str = "chat-judge"  # eval_agent: LLM-as-judge groundedness check
+    llm_judge_effort: ReasoningEffort | None = "low"
+    # The rewrite and the judge sit on the customer's wait. Past the timeout each falls back
+    # (the raw message; "no objection") instead of delaying or failing the turn.
     rewrite_timeout_seconds: float = Field(1.5, gt=0)
-    azure_openai_chat_deployment: str | None = None
-    azure_openai_embedding_deployment: str | None = None
-    # Local development only; production authenticates with Managed Identity.
-    azure_openai_api_key: SecretStr | None = None
+    online_judge_enabled: bool = True
+    judge_timeout_seconds: float = Field(4.0, gt=0)
 
     # --- MCP boundary --------------------------------------------------------
     mcp_transport: Literal["http", "sse", "stdio"] = "http"
@@ -82,6 +96,10 @@ class Settings(BaseSettings):
     mcp_device_url: str = "http://mcp-servers:8003/mcp"
     mcp_account_url: str = "http://mcp-servers:8004/mcp"
     mcp_crm_url: str = "http://mcp-servers:8005/mcp"
+    mcp_twilio_url: str = "http://mcp-servers:8006/mcp"
+    mcp_stripe_url: str = "http://mcp-servers:8007/mcp"
+    mcp_gmail_url: str = "http://mcp-servers:8008/mcp"
+    mcp_drive_url: str = "http://mcp-servers:8009/mcp"
 
     # --- Service-to-service (ClusterIP DNS names) ----------------------------
     orchestrator_url: str = "http://orchestrator:8000"
@@ -90,6 +108,8 @@ class Settings(BaseSettings):
     agent_evaluator_url: str = "http://agent-evaluator:8000"
     max_eval_retries: int = Field(2, ge=0)
     max_troubleshoot_turns: int = Field(3, ge=1)
+    # Device checks and fixes the troubleshooter may run in one turn (0 turns the tool loop off).
+    troubleshooter_tool_steps: int = Field(3, ge=0, le=5)
     # Per-customer daily cap on estimated input tokens (E6-5). 0 disables the cap.
     daily_token_budget: int = Field(50_000, ge=0)
     # --- Document storage (E2-2, E13). Private blob accounts, Entra auth, no keys. ----------------
@@ -105,9 +125,6 @@ class Settings(BaseSettings):
     uploads_container: str = "customer-uploads"
     upload_max_bytes: int = Field(10_000_000, ge=1)
     upload_daily_limit: int = Field(10, ge=1, description="Uploads per customer per 24 h")
-
-    # Model-driven tool calling in the Director (E4-3/E5-7). Off until verified end to end (E4-0).
-    director_tool_calling: bool = False
     # Azure AI Content Safety Prompt Shields (E10-9). Unset = local pattern check only.
     content_safety_endpoint: str | None = None
 
@@ -116,10 +133,31 @@ class Settings(BaseSettings):
     acs_email_from: str | None = None  # verified ACS sender address, e.g. DoNotReply@<domain>
     servicebus_namespace_fqdn: str | None = None  # e.g. sb-support-dev-xxxxx.servicebus.windows.net
 
+    # --- Third-party providers. PLACEHOLDERS: none is configured yet, every one defaults to a stub.
+    # Secrets belong in Key Vault (mounted as environment variables), never in this file.
+    # Twilio: outbound SMS (a provider beside ACS) and the inbound chat channel.
+    sms_provider: Literal["acs", "twilio"] = "acs"  # who the notification worker sends SMS with
+    twilio_account_sid: str | None = None  # PLACEHOLDER: ACxxxxxxxx
+    twilio_auth_token: SecretStr | None = None  # PLACEHOLDER: from Key Vault
+    twilio_sms_from: str | None = None  # PLACEHOLDER: the purchased Twilio number, E.164
+    twilio_channel_enabled: bool = False  # the inbound chat webhook /channels/twilio/inbound
+    twilio_webhook_url: str | None = None  # PLACEHOLDER: the exact public URL Twilio calls
+    # Stripe: the real payment gateway behind process_payment (replaces the stub gateway).
+    stripe_secret_key: SecretStr | None = None  # PLACEHOLDER: sk_live_... from Key Vault
+    stripe_api_base: str = "https://api.stripe.com"
+    stripe_currency: str = "usd"  # PLACEHOLDER until the billing currency is decided
+    # Google Workspace: the company support mailbox (Gmail) and company documents (Drive).
+    google_credentials_json: SecretStr | None = None  # PLACEHOLDER: service account key
+    google_support_mailbox: str | None = None  # PLACEHOLDER: support@<company domain>
+    google_drive_folder_id: str | None = None  # PLACEHOLDER: the shared policy folder
+
     # --- Feature flags (stubs for local and CI) ------------------------------
     use_stub_sms: bool = True
     use_stub_email: bool = True
     use_stub_gateway: bool = True
+    use_stub_twilio: bool = True
+    use_stub_gmail: bool = True
+    use_stub_drive: bool = True
 
     @model_validator(mode="after")
     def _check(self) -> Settings:

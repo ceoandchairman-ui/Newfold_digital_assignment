@@ -16,11 +16,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from support_assistant import repositories as repo
+from support_assistant.agents.intent import KeywordRouteClassifier
+from support_assistant.backend.channels import router as twilio_router
 from support_assistant.budget import BUDGET_EXCEEDED_MESSAGE, TokenBudget, estimate_tokens
 from support_assistant.chains import build_rewrite_chain, rewrite_query
 from support_assistant.config import get_settings
 from support_assistant.content_safety import PromptShields, local_shield
-from support_assistant.context import compact_history, episode_context, summarize_session
+from support_assistant.context import (
+    compact_history,
+    episode_context,
+    history_context,
+    summarize_session,
+)
 from support_assistant.db import make_pool
 from support_assistant.embeddings import HttpEmbedder
 from support_assistant.errors import (
@@ -44,16 +51,6 @@ from support_assistant.uploads import UploadService
 log = structlog.get_logger()
 VERIFIED_TTL_S = 1800
 ATTACK_REPLY = "I can only help with your account, bills and device. What can I help you with?"
-TROUBLESHOOT_WORDS = (
-    "slow",
-    "no signal",
-    "not working",
-    "can't connect",
-    "cannot connect",
-    "sim",
-    "roaming",
-    "data",
-)
 
 
 class VerifyBody(BaseModel):
@@ -145,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="fat-backend", lifespan=lifespan)
 app.add_middleware(RequestContextMiddleware)
 instrument_fastapi(app)  # W3C traceparent in, server spans out
+app.include_router(twilio_router)  # the inbound Twilio chat channel (off unless enabled)
 
 
 @app.exception_handler(SupportError)
@@ -181,11 +179,6 @@ async def verify(body: VerifyBody) -> dict[str, bool]:
         raise AuthenticationError("verification failed")
     await app.state.redis.set(f"verified:{body.session_id}", row["id"], ex=VERIFIED_TTL_S)
     return {"verified": True}
-
-
-def _route(message: str) -> str:
-    low = message.lower()
-    return "troubleshoot" if any(w in low for w in TROUBLESHOOT_WORDS) else "billing"
 
 
 async def _orchestrate(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -232,11 +225,27 @@ async def chat(body: ChatBody) -> dict[str, Any]:
             past = []
         if context := episode_context(past):
             messages = [{"role": "system", "content": context}, *messages]
-    route = _route(body.message)
-    # Only troubleshooting uses retrieval, so only pay for a rewrite there.
+    # E6-1: the first turn of a session also gets a short note about the customer's other
+    # conversations from the last few days, so they do not have to repeat themselves.
+    settings = getattr(app.state, "s", None)  # unset only where lifespan is bypassed (tests)
+    days = getattr(settings, "history_days", 0)
+    max_sessions = getattr(settings, "history_max_sessions", 5)
+    if not history and days:
+        try:
+            async with app.state.pool.connection() as conn:
+                rows = await repo.recent_sessions(conn, customer_id, days, max_sessions + 1)
+            prior = [r for r in rows if r["session_id"] != body.session_id]
+            note = history_context(prior[:max_sessions])
+        except Exception:  # noqa: BLE001 - history is a bonus, never a blocker
+            note = ""
+        if note:
+            messages = [{"role": "system", "content": note}, *messages]
+    # A cheap keyword guess; the graph's support_agent makes the real routing decision. It only
+    # tells us whether a retrieval is likely, so we pay for a rewrite just for those turns.
+    hint = (await KeywordRouteClassifier().classify(body.message)).route
     query = (
         await rewrite_query(app.state.rewrite, history, body.message)
-        if route == "troubleshoot"
+        if hint in ("TROUBLESHOOT", "INSTRUCT")
         else None
     )
     result = await _orchestrate(
@@ -245,7 +254,7 @@ async def chat(body: ChatBody) -> dict[str, Any]:
             "customer_id": customer_id,
             "session_id": body.session_id,
             "identity_verified": True,
-            "route": route,
+            "route_hint": hint,
             "search_query": query,
             "messages": messages,
         },

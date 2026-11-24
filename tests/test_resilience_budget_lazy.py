@@ -18,7 +18,15 @@ from support_assistant.budget import TokenBudget, estimate_tokens
 from support_assistant.contracts import AgentRequest
 from support_assistant.domain.intent import CLOSING_REPLY, needs_retrieval
 from support_assistant.errors import ExternalServiceUnavailable
-from support_assistant.mcp_catalog import ACCOUNT, COMMS, CRM, DATABASE, DEVICE, WRITE_TOOLS
+from support_assistant.mcp_catalog import (
+    ACCOUNT,
+    ALL_SERVERS,
+    COMMS,
+    CRM,
+    DATABASE,
+    DEVICE,
+    WRITE_TOOLS,
+)
 from support_assistant.services.retrieval import Chunk
 
 
@@ -76,8 +84,14 @@ async def test_a_slow_server_times_out_instead_of_hanging_the_turn():
     await conn.aclose()
 
 
-def test_payment_and_notification_are_the_write_tools():
-    assert WRITE_TOOLS == {"process_payment", "send_notification"}
+def test_payments_and_every_outbound_message_are_write_tools():
+    assert WRITE_TOOLS == {
+        "process_payment",
+        "reconcile_payment_attempt",
+        "send_notification",
+        "send_sms",
+        "send_email",
+    }
 
 
 # --- registry: write flag and circuit breaker ----------------------------------------------------------
@@ -88,6 +102,8 @@ URLS = {
     ACCOUNT.name: "account",
     CRM.name: "crm",
 }
+for _s in ALL_SERVERS:  # a server the tests do not name still needs a URL
+    URLS.setdefault(_s.name, f"http://{_s.name}")
 
 
 class RecConn:

@@ -165,7 +165,13 @@ async def test_instruct_reasons_over_account_facts_and_wrapped_policy_and_cites_
     _, facts, _ = llm.seen[0]
     assert "bill B1" in facts and "line +15550001" in facts and "A late fee is 5." in facts
     assert res.reply.startswith("Because the bill is overdue.") and "Late fees" in res.reply
-    assert set(reg.calls) == {"get_account_summary", "get_bills"}  # read-only tools only
+    assert set(reg.calls) == {
+        "get_account_summary",
+        "get_bills",
+        "get_contract",
+        "get_case_history",
+        "get_recent_interactions",
+    }  # read-only tools only
     assert res.proposed_action is None
 
 
@@ -193,8 +199,50 @@ async def test_billing_proposes_a_payment_and_never_pays_or_talks():
 
 # --- one model per sub-agent -------------------------------------------------------------------
 def test_without_an_openai_endpoint_every_sub_agent_has_a_safe_template_model():
-    llms = build_support_llms(
-        Settings(database_url="postgresql://x", redis_url="redis://x"), "chat-x"
-    )
+    llms = build_support_llms(Settings(database_url="postgresql://x", redis_url="redis://x"))
     assert set(llms) == {"route", "normal", "instruct", "billing"}
     assert all(isinstance(v, TemplateLLM) for v in llms.values())
+
+
+class RichRegistry(Registry):
+    async def call(self, tool: str, args: dict) -> dict:
+        if tool == "get_contract":
+            return {
+                "ok": True,
+                "contracts": [
+                    {
+                        "phone_number": "+15550001",
+                        "expired": True,
+                        "contract_end_date": "2026-10-01",
+                    }
+                ],
+            }
+        if tool == "get_case_history":
+            return {"ok": True, "cases": [{"summary": "SIM reseated", "outcome": "resolved"}]}
+        if tool == "get_recent_interactions":
+            return {"ok": True, "sessions": [{"summary": "Customer asked: slow data"}]}
+        return await super().call(tool, args)
+
+
+async def test_instruct_also_reasons_over_the_contract_past_cases_and_recent_chats():
+    h, _ = _h(RichRegistry())
+    llm = Recorder("reasoning")
+    await roles.instruct_gen(_req("why can I not cancel"), h, llm)
+    facts = llm.seen[0][1]
+    assert "contract ended 2026-10-01" in facts
+    assert "Past support cases: SIM reseated (resolved)" in facts
+    assert "Conversations in the last days: Customer asked: slow data" in facts
+
+
+async def test_one_failing_read_does_not_cost_the_others():
+    class Flaky(RichRegistry):
+        async def call(self, tool, args):
+            if tool == "get_case_history":
+                raise RuntimeError("crm down")
+            return await super().call(tool, args)
+
+    h, _ = _h(Flaky())
+    llm = Recorder("reasoning")
+    res = await roles.instruct_gen(_req("why"), h, llm)
+    assert "Past support cases" not in llm.seen[0][1] and "contract ended" in llm.seen[0][1]
+    assert res.reply

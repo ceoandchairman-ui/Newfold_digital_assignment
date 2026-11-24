@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from support_assistant.agents import roles
-from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, CRM, DATABASE
+from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, CRM, DATABASE, WRITE_TOOLS
 from support_assistant.mcp_servers.account import build_account_server
 from support_assistant.mcp_servers.common import mask_email
 from support_assistant.mcp_servers.crm import MAX_CASES, MAX_DAYS, build_crm_server
@@ -58,12 +58,10 @@ def test_the_new_namespaces_are_in_the_catalog_with_their_own_ports():
     assert ACCOUNT.tools == {"get_customer_profile", "get_devices", "get_contract"}
     assert CRM.tools == {"get_case_history", "get_recent_interactions"}
     assert "get_payment_methods" in DATABASE.tools
-    assert {s.port for s in ALL_SERVERS} == {8001, 8002, 8003, 8004, 8005}
+    assert {s.port for s in ALL_SERVERS} == set(range(8001, 8010))
 
 
 def test_every_new_tool_is_read_only_so_none_is_a_write_tool():
-    from support_assistant.mcp_catalog import WRITE_TOOLS
-
     new = ACCOUNT.tools | CRM.tools | {"get_payment_methods"}
     assert not (new & WRITE_TOOLS)
 
@@ -77,10 +75,10 @@ def test_the_support_agent_may_read_all_of_it_and_the_evaluator_none_of_it():
     assert not ({"get_payment_methods", "get_bills"} & roles.TROUBLESHOOTER_TOOLS)
 
 
-def test_every_catalog_tool_is_allowed_to_at_least_one_agent_or_is_the_payment_write():
+def test_every_catalog_tool_is_allowed_to_an_agent_or_is_a_write_no_agent_may_call():
     allowed = roles.DIRECTOR_TOOLS | roles.TROUBLESHOOTER_TOOLS | roles.EVALUATOR_TOOLS
     every = {t for s in ALL_SERVERS for t in s.tools}
-    assert every - allowed == {"process_payment", "send_notification"}
+    assert every - allowed == WRITE_TOOLS  # exactly the writes: no agent may call them
 
 
 # --- account_management ----------------------------------------------------------------------

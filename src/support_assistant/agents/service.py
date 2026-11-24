@@ -20,7 +20,7 @@ from support_assistant.agents.intent import (
     LlmIntentClassifier,
     LlmRouteClassifier,
 )
-from support_assistant.agents.llm import build_llm, build_support_llms
+from support_assistant.agents.llm import build_role_llm, build_support_llms
 from support_assistant.agents.mcp_client import McpRegistry, ToolRegistry
 from support_assistant.config import get_settings
 from support_assistant.contracts import AgentRequest, AgentResponse
@@ -28,6 +28,7 @@ from support_assistant.db import make_pool
 from support_assistant.embeddings import HttpEmbedder
 from support_assistant.errors import SupportError
 from support_assistant.mcp_catalog import server_urls
+from support_assistant.models import Role
 from support_assistant.observability import RequestContextMiddleware
 from support_assistant.redis_factory import make_redis
 from support_assistant.reranker import HttpReranker
@@ -64,19 +65,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tool_redis = tool_redis
     app.state.mcp = mcp
     app.state.registry = registry
-    app.state.llm = build_llm(settings, f"chat-{AGENT}", use_reasoning=AGENT != "director")
-    # Validated model classification when a model is configured; keywords otherwise (E4-3).
-    app.state.classifier = (
-        LlmIntentClassifier(app.state.llm)
-        if settings.azure_openai_endpoint
-        else KeywordIntentClassifier()
+    # One model per job (models.py). The support_agent (the "director" service) hosts four modes on
+    # two models; the troubleshooter has its own reasoning model; the evaluator has an optional
+    # judge. Each is a deployment name from settings, so a model swap is a Terraform change.
+    app.state.llms = build_support_llms(settings) if AGENT == "director" else {}
+    app.state.llm = (
+        build_role_llm(settings, Role.TROUBLESHOOTER)
+        if AGENT == "troubleshooter"
+        else app.state.llms.get("billing")
     )
-    # The support_agent (the director service) hosts four modes, each with its own model.
-    app.state.llms = build_support_llms(settings, f"chat-{AGENT}")
+    app.state.judge = (
+        build_role_llm(settings, Role.JUDGE)
+        if AGENT == "evaluator" and settings.azure_openai_endpoint and settings.online_judge_enabled
+        else None
+    )
+    # Validated model classification when a model is configured; keywords otherwise (E4-3).
+    modelled = AGENT == "director" and bool(settings.azure_openai_endpoint)
+    app.state.classifier = (
+        LlmIntentClassifier(app.state.llms["route"]) if modelled else KeywordIntentClassifier()
+    )
     app.state.route_classifier = (
-        LlmRouteClassifier(app.state.llms["route"])
-        if settings.azure_openai_endpoint
-        else KeywordRouteClassifier()
+        LlmRouteClassifier(app.state.llms["route"]) if modelled else KeywordRouteClassifier()
     )
     app.state.pool = None
     if AGENT == "troubleshooter":
@@ -145,10 +154,14 @@ async def run(req: AgentRequest) -> AgentResponse:
                 harness,
                 app.state.llms["billing"],
                 app.state.classifier,
-                tool_calling=app.state.settings.director_tool_calling,
             )
         if AGENT == "evaluator":
-            return await roles.evaluator(req, harness)
+            return await roles.evaluator(
+                req,
+                harness,
+                judge=app.state.judge,
+                judge_timeout_s=app.state.settings.judge_timeout_seconds,
+            )
 
         async def search(q: str) -> list[Chunk]:
             return await search_kb(
@@ -159,6 +172,12 @@ async def run(req: AgentRequest) -> AgentResponse:
                 reranker=app.state.reranker,
             )
 
-        return await roles.troubleshooter(req, harness, app.state.llm, search)
+        return await roles.troubleshooter(
+            req,
+            harness,
+            app.state.llm,
+            search,
+            tool_steps=app.state.settings.troubleshooter_tool_steps,
+        )
     except SupportError as exc:
         raise HTTPException(exc.http_status, detail=exc.customer_message) from exc

@@ -19,6 +19,8 @@ URLS = {
     ACCOUNT.name: "http://account",
     CRM.name: "http://crm",
 }
+for _s in ALL_SERVERS:  # a server the tests do not name still needs a URL
+    URLS.setdefault(_s.name, f"http://{_s.name}")
 
 
 class FakeConn:
@@ -69,6 +71,8 @@ async def test_each_tool_is_routed_to_the_server_that_hosts_it():
         "from"
     ] == "http://account"
     assert (await reg.call("get_case_history", {"customer_id": "C1"}))["from"] == "http://crm"
+    for tool in ("send_sms", "get_payment_status", "send_email", "search_documents"):
+        await reg.call(tool, {"customer_id": "C1"})  # the four provider servers
     assert [len(c.calls) for c in conns.values()] == [1] * len(ALL_SERVERS)
 
 

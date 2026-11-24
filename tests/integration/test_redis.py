@@ -35,7 +35,7 @@ def _state() -> dict[str, Any]:
         "customer_id": "C1",
         "session_id": "S-it",
         "identity_verified": True,
-        "route": "billing",
+        "route_hint": "BILLING",
         "messages": [{"role": "user", "content": "pay"}],
         "proposed_action": None,
         "eval_attempts": 0,

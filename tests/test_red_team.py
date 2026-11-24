@@ -65,13 +65,13 @@ def _env(monkeypatch, llm=None, docs=None):
 
 
 def _turn(
-    customer: str, text: str, route: str = "billing", verified: bool = True
+    customer: str, text: str, route: str = "BILLING", verified: bool = True
 ) -> dict[str, Any]:
     return {
         "customer_id": customer,
         "session_id": f"S-{customer}",
         "identity_verified": verified,
-        "route": route,
+        "route_hint": route,
         "messages": [{"role": "user", "content": text}],
         "search_query": text if route == "troubleshoot" else None,
         "proposed_action": None,
@@ -135,7 +135,7 @@ async def test_injected_manual_text_cannot_steer_the_answer(monkeypatch):
         )
     ]
     graph, *_ = _env(monkeypatch, docs=docs)
-    out = await graph.ainvoke(_turn("C1001", "no signal", route="troubleshoot"), _cfg("C1001"))
+    out = await graph.ainvoke(_turn("C1001", "no signal", route="TROUBLESHOOT"), _cfg("C1001"))
     assert out["reply"] == ESCALATION_MESSAGE
 
 

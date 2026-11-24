@@ -1,15 +1,11 @@
-"""E5-7 MAF tool binding through the harness; E10-9 Prompt Shields with a safe fallback."""
+"""E10-9 Prompt Shields with a safe fallback."""
 
 import httpx
 import pytest
 
-from support_assistant.agents import roles
-from support_assistant.agents.harness import Harness
-from support_assistant.agents.maf_tools import build_maf_tools
 from support_assistant.agents.mcp_client import StaticRegistry
 from support_assistant.content_safety import PromptShields, local_shield
 from support_assistant.contracts import AgentRequest
-from support_assistant.errors import AuthenticationError
 
 
 def _req(verified: bool = True) -> AgentRequest:
@@ -35,41 +31,6 @@ def _registry(seen):
             "process_payment": process_payment,
         }
     )
-
-
-# --- MAF tools (E5-7) -------------------------------------------------------------------------------------
-def test_only_allow_listed_read_tools_become_maf_tools():
-    h = Harness("evaluator", roles.EVALUATOR_TOOLS, _registry([]))
-    names = [t.name for t in build_maf_tools(h, _req(), roles.EVALUATOR_TOOLS)]
-    assert names == ["check_recent_payments", "get_bills"]
-    everything = roles.EVALUATOR_TOOLS | {"process_payment"}
-    assert "process_payment" not in [t.name for t in build_maf_tools(h, _req(), everything)]
-
-
-def test_the_model_is_never_shown_a_customer_id_parameter():
-    h = Harness("director", roles.DIRECTOR_TOOLS, _registry([]))
-    for tool in build_maf_tools(h, _req(), roles.DIRECTOR_TOOLS | roles.EVALUATOR_TOOLS):
-        assert "customer_id" not in tool.parameters().get("properties", {}), tool.name
-
-
-async def test_a_maf_tool_call_goes_through_the_harness_with_the_verified_customer():
-    seen: list = []
-    h = Harness("evaluator", roles.EVALUATOR_TOOLS, _registry(seen))
-    tool = {t.name: t for t in build_maf_tools(h, _req(), roles.EVALUATOR_TOOLS)}[
-        "check_recent_payments"
-    ]
-    await tool.invoke(arguments={"bill_id": "B1", "minutes": 5}, skip_parsing=True)
-    assert seen == [("check_recent_payments", {"bill_id": "B1", "minutes": 5, "customer_id": "C1"})]
-    assert h.audit[-1]["tool"] == "check_recent_payments"
-
-
-async def test_a_maf_tool_still_refuses_an_unverified_customer():
-    h = Harness("director", roles.DIRECTOR_TOOLS, _registry([]))
-    tool = {t.name: t for t in build_maf_tools(h, _req(verified=False), roles.DIRECTOR_TOOLS)}[
-        "get_bills"
-    ]
-    with pytest.raises(AuthenticationError):
-        await tool.invoke(arguments={}, skip_parsing=True)
 
 
 # --- Prompt Shields (E10-9) -------------------------------------------------------------------------------------

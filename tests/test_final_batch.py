@@ -7,11 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from support_assistant.agents import roles
-from support_assistant.agents.harness import Harness
-from support_assistant.agents.mcp_client import StaticRegistry
 from support_assistant.config import Settings
-from support_assistant.contracts import AgentRequest
 from support_assistant.mcp_catalog import DEVICE
 from support_assistant.mcp_servers.device import build_device_server
 from support_assistant.redis_factory import EntraRedisCredentials, make_redis
@@ -212,76 +208,3 @@ async def test_email_without_an_address_or_sender_is_dead_lettered():
         is Outcome.DEAD_LETTER
     )
     assert await handle_message(_msg("email"), _phone, _no_sms) is Outcome.DEAD_LETTER
-
-
-# --- Director tool calling (E4-3, E5-7) -------------------------------------------------------------------------------
-class ToolCallingLLM:
-    """Stands in for a model that calls the first tool it is given, then answers."""
-
-    def __init__(self, fail: bool = False):
-        self.fail, self.offered = fail, []
-
-    async def respond(self, instructions, facts, user_message):
-        return f"template: {facts}"
-
-    async def respond_with_tools(self, instructions, user_message, tools):
-        self.offered = [t.name for t in tools]
-        if self.fail:
-            raise RuntimeError("model down")
-        bills = next(t for t in tools if t.name == "get_bills")
-        await bills.invoke(arguments={}, skip_parsing=True)
-        return "You have one bill due."
-
-
-def _req(text: str) -> AgentRequest:
-    return AgentRequest(
-        customer_id="C1",
-        session_id="S",
-        identity_verified=True,
-        messages=[{"role": "user", "content": text}],
-    )
-
-
-def _harness(seen: list):
-    async def get_bills(customer_id):
-        seen.append(customer_id)
-        return {
-            "ok": True,
-            "bills": [{"id": "B1", "amount_due": "5", "due_date": "d", "status": "ISSUED"}],
-        }
-
-    async def get_account_summary(customer_id):
-        return {"ok": True, "lines": []}
-
-    return Harness(
-        "director",
-        roles.DIRECTOR_TOOLS,
-        StaticRegistry({"get_bills": get_bills, "get_account_summary": get_account_summary}),
-    )
-
-
-async def test_with_the_flag_on_the_model_answers_through_harness_guarded_tools():
-    seen: list = []
-    llm = ToolCallingLLM()
-    res = await roles.director(_req("what do I owe"), _harness(seen), llm, tool_calling=True)
-    assert res.reply == "You have one bill due." and seen == ["C1"]
-    assert "process_payment" not in llm.offered
-
-
-async def test_payment_intents_never_take_the_tool_calling_path():
-    llm = ToolCallingLLM()
-    res = await roles.director(_req("pay my bill"), _harness([]), llm, tool_calling=True)
-    assert res.proposed_action is not None and llm.offered == []
-
-
-async def test_a_tool_calling_failure_falls_back_to_the_deterministic_path():
-    res = await roles.director(
-        _req("what do I owe"), _harness([]), ToolCallingLLM(fail=True), tool_calling=True
-    )
-    assert res.reply.startswith("template:")
-
-
-async def test_with_the_flag_off_tool_calling_is_never_used():
-    llm = ToolCallingLLM()
-    await roles.director(_req("what do I owe"), _harness([]), llm)
-    assert llm.offered == []

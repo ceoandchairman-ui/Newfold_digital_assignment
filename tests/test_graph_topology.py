@@ -11,41 +11,27 @@ from support_assistant.contracts import AgentRequest, AgentResponse
 from support_assistant.errors import ExternalServiceUnavailable
 from support_assistant.orchestrator.graph import build_graph
 
+# The main graph: three agents (each a subgraph) and the plain-code gates around them.
 NODES = {
-    "auth_gate",
-    "deny",
-    "support_agent",
-    "normal_resp_gen",
-    "instruct_gen",
-    "billing_gen",
-    "retrieve",
-    "troubleshoot_agent",
-    "eval_agent",
-    "approve",
-    "mcp_client_routing_node",
+    "auth_gate", "deny", "support_agent", "troubleshoot_agent", "eval_agent", "approve", "pay",
     "egress",
-}
+}  # fmt: skip
 EDGES = {
-    ("auth_gate", "deny"),
-    ("auth_gate", "support_agent"),
-    ("support_agent", "normal_resp_gen"),
-    ("support_agent", "billing_gen"),
-    ("support_agent", "retrieve"),
-    ("retrieve", "troubleshoot_agent"),
+    ("auth_gate", "deny"), ("auth_gate", "support_agent"),
+    ("support_agent", "troubleshoot_agent"), ("support_agent", "eval_agent"),
+    ("support_agent", "egress"),
+    ("troubleshoot_agent", "eval_agent"), ("troubleshoot_agent", "egress"),
+    ("eval_agent", "approve"), ("eval_agent", "egress"),
+    ("approve", "pay"), ("approve", "egress"),
+    ("pay", "egress"), ("deny", "egress"),
+}  # fmt: skip
+# Inside the agents (LangGraph names a subgraph's nodes "<agent>:<node>").
+SUPPORT_NODES = {"route", "normal_resp_gen", "retrieve", "instruct_gen", "billing_gen"}
+SUPPORT_EDGES = {
+    ("route", "normal_resp_gen"), ("route", "billing_gen"), ("route", "retrieve"),
     ("retrieve", "instruct_gen"),
-    ("billing_gen", "eval_agent"),
-    ("billing_gen", "egress"),
-    ("troubleshoot_agent", "eval_agent"),
-    ("troubleshoot_agent", "egress"),
-    ("eval_agent", "approve"),
-    ("eval_agent", "egress"),
-    ("approve", "mcp_client_routing_node"),
-    ("approve", "egress"),
-    ("normal_resp_gen", "egress"),
-    ("instruct_gen", "egress"),
-    ("mcp_client_routing_node", "egress"),
-    ("deny", "egress"),
-}
+}  # fmt: skip
+TROUBLE_NODES = {"retrieve", "diagnose"}
 
 
 class Retriever(BaseRetriever):
@@ -80,13 +66,12 @@ class Scripted:
         return AgentResponse(reply=f"{agent}:{mode} Source: x")
 
 
-def _state(route: str | None = None, hint: str | None = None) -> dict[str, Any]:
+def _state(hint: str | None = None) -> dict[str, Any]:
     return {
         "customer_id": "C1",
         "session_id": "S",
         "identity_verified": True,
         "messages": [{"role": "user", "content": "hello"}],
-        **({"route": route} if route else {}),
         **({"route_hint": hint} if hint else {}),
         "proposed_action": None,
         "eval_attempts": 0,
@@ -104,17 +89,46 @@ async def _run(client: Scripted, state: dict[str, Any], retriever: Any = None) -
     return await g.ainvoke(state, {"configurable": {"thread_id": "t"}})  # type: ignore[no-any-return]
 
 
-def test_the_compiled_graph_has_exactly_the_contracted_nodes_and_edges():
-    g = build_graph(Scripted("NORMAL"), _pay, MemorySaver()).get_graph()
+def _graph(xray: bool = False):
+    return build_graph(Scripted("NORMAL"), _pay, MemorySaver()).get_graph(xray=xray)
+
+
+def test_the_main_graph_has_exactly_the_three_agents_and_the_code_around_them():
+    g = _graph()
     assert set(g.nodes) - {"__start__", "__end__"} == NODES
     edges = {(e.source, e.target) for e in g.edges}
-    inner = {(s, t) for s, t in edges if "__start__" != s and "__end__" != t}
-    assert inner == EDGES - {("egress", "__end__")}
+    assert {(s, t) for s, t in edges if s != "__start__" and t != "__end__"} == EDGES
     assert ("__start__", "auth_gate") in edges and ("egress", "__end__") in edges
 
 
+def test_the_support_agent_is_one_agent_made_of_a_router_and_three_generators():
+    g = _graph(xray=True)
+    inner = {n.split(":", 1)[1] for n in g.nodes if n.startswith("support_agent:")}
+    assert inner - {"__end__"} == SUPPORT_NODES
+    edges = {
+        (e.source.split(":")[-1], e.target.split(":")[-1])
+        for e in g.edges
+        if e.source.startswith("support_agent:") and e.target.startswith("support_agent:")
+    }
+    assert SUPPORT_EDGES <= edges
+    # every generator ends the agent: none of them calls another generator
+    assert not {
+        (a, b) for a, b in edges if a in SUPPORT_NODES - {"route", "retrieve"} and b != "__end__"
+    }
+
+
+def test_the_troubleshoot_agent_retrieves_then_diagnoses():
+    g = _graph(xray=True)
+    inner = {n.split(":", 1)[1] for n in g.nodes if n.startswith("troubleshoot_agent:")}
+    assert inner == TROUBLE_NODES
+
+
+def test_there_is_no_mcp_hub_node_the_one_write_is_the_pay_step():
+    assert "mcp_client_routing_node" not in _graph(xray=True).nodes and "pay" in _graph().nodes
+
+
 def test_the_unverified_path_reaches_no_agent_tool_or_retriever():
-    g = build_graph(Scripted("NORMAL"), _pay, MemorySaver()).get_graph()
+    g = _graph()
     assert {e.target for e in g.edges if e.source == "deny"} == {"egress"}
 
 
@@ -163,9 +177,3 @@ async def test_when_the_router_is_down_the_backend_hint_decides_and_unsure_means
     c2 = Scripted(None, route_down=True)
     await _run(c2, _state())
     assert c2.calls == [("director", "route"), ("director", "normal")]
-
-
-async def test_the_legacy_lowercase_route_still_selects_a_branch():
-    c = Scripted(None)  # the agent gives no route (an older agent)
-    await _run(c, _state(route="billing"))
-    assert c.calls[-1] == ("director", "billing")

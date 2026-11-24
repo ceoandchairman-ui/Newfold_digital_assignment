@@ -1,21 +1,27 @@
 """Thin LangGraph router (Fat Backend / Skinny Graph). Agents are called through AgentClient.
 
-The edge contract of backlog E4-10 / scope doc section 3:
+The main graph has three AGENT nodes, each a small subgraph of its own (backlog E4-10, scope doc
+section 3), plus the plain-code gates around them:
 
     auth_gate -> unverified: deny -> egress
-              -> verified:   support_agent   (routes: NORMAL | INSTRUCT | BILLING | TROUBLESHOOT)
-        NORMAL       -> normal_resp_gen  (simple questions, small model)               -> egress
-        INSTRUCT     -> retrieve -> instruct_gen (reasoning model, policy + facts)     -> egress
-        BILLING      -> billing_gen (task-executing model, tools; PROPOSES a payment)
-                          -> proposal?  eval_agent -> approve (interrupt) -> mcp_client_routing_node
-        TROUBLESHOOT -> retrieve -> troubleshoot_agent -> eval_agent -> egress
+              -> verified:   support_agent
+    support_agent   (subgraph)  route -> normal_resp_gen                    simple questions
+                                       -> retrieve -> instruct_gen          reasoning questions
+                                       -> billing_gen                       task questions, tools
+                                       -> (TROUBLESHOOT: leaves the subgraph)
+        TROUBLESHOOT       -> troubleshoot_agent  (subgraph)  retrieve -> diagnose
+        payment proposed   -> eval_agent
+        otherwise          -> egress
+    troubleshoot_agent -> eval_agent
+    eval_agent: a payment proposal gets the plain-code verdict; a troubleshooting reply gets the rule
+        check and then the LLM judge -> approve (interrupt) -> pay -> egress, or egress
+    egress: the last filter on every path.
 
-`retrieve` is the independent, non-MCP retriever (a LangChain retriever called from a node, D8): the
-support_agent's instruct_gen and the troubleshooter read its chunks, MCP is only for tools.
-`mcp_client_routing_node` is the graph's MCP hub: it executes the approved payment (the only write).
-eval_agent: payment verdicts are plain code; a troubleshooting reply gets an invariant check first.
-Evaluator reject -> explain and stop; outage or repeated rejects -> escalate (E3-7).
-Pauses use interrupt(); state is checkpointed by the Redis saver (D9).
+`retrieve` is the independent, non-MCP retriever (a LangChain retriever called from a node, D8): its
+chunks feed instruct_gen, the troubleshooter and the eval_agent's judge. MCP is only for tools, and
+tools run inside the agent services behind their harness. `pay` is the one graph-side write: it
+executes the approved payment. Evaluator reject -> explain and stop; outage or repeated rejects ->
+escalate (E3-7). Pauses use interrupt(); state is checkpointed by the Redis saver (D9).
 """
 
 from __future__ import annotations
@@ -80,7 +86,7 @@ def _traced(name: str, fn: Any) -> Any:
             if out.get("escalated"):
                 span.set_attribute("support.escalated", True)
                 span.set_attribute("support.escalation_reason", str(out.get("escalation_reason")))
-            if name == "mcp_client_routing_node":
+            if name == "pay":
                 span.set_attribute("support.payment", True)  # tail sampling keeps all of these
             return out
 
@@ -93,7 +99,6 @@ class SessionState(TypedDict, total=False):
     customer_id: str
     session_id: str
     identity_verified: bool
-    route: str  # legacy lowercase hint ("billing" | "troubleshoot"); only a fallback
     route_hint: str | None  # the fat backend's cheap keyword guess; only a fallback
     intent: Literal["NORMAL", "INSTRUCT", "BILLING", "TROUBLESHOOT"]  # decided by support_agent
     messages: list[dict[str, Any]]  # plain dicts; the backend owns history (memory.py)
@@ -157,15 +162,13 @@ def build_graph(
         return {"reply": AuthenticationError("unverified").customer_message}
 
     def _fallback_intent(state: SessionState) -> str:
-        """Used only when support_agent gives no route (outage, or an agent that predates routing)."""
+        """Used only when support_agent gives no route (an outage). The backend's keyword hint, or
+        NORMAL when unsure (E4-3)."""
         hint = str(state.get("route_hint") or "").upper()
-        if hint in ("NORMAL", "INSTRUCT", "BILLING", "TROUBLESHOOT"):
-            return hint
-        legacy = {"billing": "BILLING", "troubleshoot": "TROUBLESHOOT"}
-        return legacy.get(str(state.get("route") or ""), "NORMAL")  # E4-3: unsure -> normal
+        return hint if hint in ("NORMAL", "INSTRUCT", "BILLING", "TROUBLESHOOT") else "NORMAL"
 
-    async def support_agent(state: SessionState) -> dict[str, Any]:
-        """The Director (E4-3): one validated routing decision. No wording, no tools."""
+    async def route(state: SessionState) -> dict[str, Any]:
+        """The support_agent's router (E4-3): one validated decision. No wording, no tools."""
         try:
             res = await client.run("director", _req(state, mode="route"))
             intent = res.route or _fallback_intent(state)
@@ -227,7 +230,8 @@ def build_graph(
             return {"proposed_action": None, **_escalate(EscalationReason.INVARIANT_VIOLATION)}
         return {"reply": res.reply, "proposed_action": res.proposed_action, "audit": res.audit}
 
-    async def troubleshoot_agent(state: SessionState) -> dict[str, Any]:
+    async def diagnose(state: SessionState) -> dict[str, Any]:
+        """The troubleshoot_agent's step: answer from the manual, 3 turns at most (E4-5)."""
         turns = state.get("troubleshoot_turns", 0) + 1
         if troubleshoot_loop_exceeded(turns, max_troubleshoot_turns + 1):
             return _escalate(EscalationReason.TROUBLESHOOT_LOOP)
@@ -300,8 +304,8 @@ def build_graph(
             return {}
         return {"proposed_action": None, "reply": "Okay, I have not made any payment."}
 
-    async def mcp_client_routing_node(state: SessionState) -> dict[str, Any]:
-        """The graph's MCP hub. It executes the one approved write (process_payment)."""
+    async def pay_node(state: SessionState) -> dict[str, Any]:
+        """Execute the approved payment: the one write the graph itself performs."""
         action = state.get("proposed_action")
         if not action:
             return {}
@@ -328,19 +332,17 @@ def build_graph(
     def after_auth(state: SessionState) -> str:
         return "support_agent" if state.get("identity_verified") else "deny"
 
-    def after_support_agent(state: SessionState) -> str:
-        """Dynamic routing on the customer's intent (E4-3, E4-10)."""
+    def after_route(state: SessionState) -> str:
+        """Dynamic routing on the customer's intent (E4-3). TROUBLESHOOT leaves this subgraph."""
         return {
             "NORMAL": "normal_resp_gen",
             "BILLING": "billing_gen",
             "INSTRUCT": "retrieve",
-            "TROUBLESHOOT": "retrieve",
-        }.get(str(state.get("intent")), "normal_resp_gen")
+        }.get(str(state.get("intent")), "done")
 
-    def after_retrieve(state: SessionState) -> str:
-        return "troubleshoot_agent" if state.get("intent") == "TROUBLESHOOT" else "instruct_gen"
-
-    def after_billing_gen(state: SessionState) -> str:
+    def after_support_agent(state: SessionState) -> str:
+        if state.get("intent") == "TROUBLESHOOT" and not state.get("escalated"):
+            return "troubleshoot_agent"
         return "eval_agent" if state.get("proposed_action") else "egress"
 
     def after_troubleshoot(state: SessionState) -> str:
@@ -352,24 +354,54 @@ def build_graph(
         return "approve" if state.get("proposed_action") else "egress"
 
     def after_approve(state: SessionState) -> str:
-        return "mcp_client_routing_node" if state.get("proposed_action") else "egress"
+        return "pay" if state.get("proposed_action") else "egress"
 
+    # --- the support_agent: one agent made of several nodes (E4-3, E4-4) -------------------------
+    support = StateGraph(SessionState)
+    for name, fn in (
+        ("route", route),
+        ("normal_resp_gen", normal_resp_gen),
+        ("retrieve", retrieve),
+        ("instruct_gen", instruct_gen),
+        ("billing_gen", billing_gen),
+    ):
+        support.add_node(name, _traced(name, fn))
+    support.add_edge(START, "route")
+    support.add_conditional_edges(
+        "route",
+        after_route,
+        {
+            "normal_resp_gen": "normal_resp_gen",
+            "billing_gen": "billing_gen",
+            "retrieve": "retrieve",
+            "done": END,
+        },
+    )
+    support.add_edge("retrieve", "instruct_gen")
+    for name in ("normal_resp_gen", "instruct_gen", "billing_gen"):
+        support.add_edge(name, END)
+
+    # --- the troubleshoot_agent: lazy retrieval, then a bounded diagnosis (E4-5) ------------------
+    trouble = StateGraph(SessionState)
+    trouble.add_node("retrieve", _traced("retrieve", retrieve))
+    trouble.add_node("diagnose", _traced("diagnose", diagnose))
+    trouble.add_edge(START, "retrieve")
+    trouble.add_edge("retrieve", "diagnose")
+    trouble.add_edge("diagnose", END)
+
+    # --- the main graph: three agents and the code around them -----------------------------------
     g = StateGraph(SessionState)
     for name, fn in (
         ("auth_gate", auth_gate),
         ("deny", deny),
-        ("support_agent", support_agent),
-        ("normal_resp_gen", normal_resp_gen),
-        ("instruct_gen", instruct_gen),
-        ("billing_gen", billing_gen),
-        ("retrieve", retrieve),
-        ("troubleshoot_agent", troubleshoot_agent),
         ("eval_agent", eval_agent),
         ("approve", approve),
-        ("mcp_client_routing_node", mcp_client_routing_node),
+        ("pay", pay_node),
         ("egress", egress),
     ):
         g.add_node(name, _traced(name, fn))
+    g.add_node("support_agent", support.compile())  # subgraphs share the state and the checkpointer
+    g.add_node("troubleshoot_agent", trouble.compile())
     g.add_edge(START, "auth_gate")
     g.add_conditional_edges(
         "auth_gate", after_auth, {"deny": "deny", "support_agent": "support_agent"}
@@ -378,31 +410,17 @@ def build_graph(
         "support_agent",
         after_support_agent,
         {
-            "normal_resp_gen": "normal_resp_gen",
-            "billing_gen": "billing_gen",
-            "retrieve": "retrieve",
+            "troubleshoot_agent": "troubleshoot_agent",
+            "eval_agent": "eval_agent",
+            "egress": "egress",
         },
-    )
-    g.add_conditional_edges(
-        "retrieve",
-        after_retrieve,
-        {"troubleshoot_agent": "troubleshoot_agent", "instruct_gen": "instruct_gen"},
-    )
-    g.add_conditional_edges(
-        "billing_gen", after_billing_gen, {"eval_agent": "eval_agent", "egress": "egress"}
     )
     g.add_conditional_edges(
         "troubleshoot_agent", after_troubleshoot, {"eval_agent": "eval_agent", "egress": "egress"}
     )
     g.add_conditional_edges("eval_agent", after_eval, {"approve": "approve", "egress": "egress"})
-    g.add_conditional_edges(
-        "approve",
-        after_approve,
-        {"mcp_client_routing_node": "mcp_client_routing_node", "egress": "egress"},
-    )
-    g.add_edge("normal_resp_gen", "egress")
-    g.add_edge("instruct_gen", "egress")
-    g.add_edge("mcp_client_routing_node", "egress")
+    g.add_conditional_edges("approve", after_approve, {"pay": "pay", "egress": "egress"})
+    g.add_edge("pay", "egress")
     g.add_edge("deny", "egress")
     g.add_edge("egress", END)
     return g.compile(checkpointer=checkpointer)

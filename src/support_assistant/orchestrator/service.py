@@ -48,7 +48,7 @@ class InvokeBody(BaseModel):
     customer_id: str
     session_id: str
     identity_verified: bool
-    route: str = "billing"
+    route_hint: str | None = None
     search_query: str | None = None
     messages: list[dict[str, Any]]
 

@@ -48,7 +48,7 @@ def _turn(text: str) -> dict[str, Any]:
         "customer_id": "C1002",
         "session_id": "S",
         "identity_verified": True,
-        "route": "billing",
+        "route_hint": "BILLING",
         "messages": [{"role": "user", "content": text}],
         "proposed_action": None,
         "eval_attempts": 0,

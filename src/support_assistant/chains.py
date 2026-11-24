@@ -13,6 +13,7 @@ from langchain_core.runnables import Runnable
 from langchain_openai import AzureChatOpenAI
 
 from support_assistant.config import Settings
+from support_assistant.models import Role, model_for
 
 _PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -29,24 +30,32 @@ _PROMPT = ChatPromptTemplate.from_messages(
 def build_rewrite_chain(
     settings: Settings, deployment: str | None = None
 ) -> Runnable[dict[str, Any], str]:
-    """Query rewrite runs on the small model (a 64-token job) with a hard timeout and no retries.
+    """Query rewrite runs on its own small model (the REWRITE role) with a hard timeout, no retries.
 
     It sits in series before the graph starts, so a slow answer is worse than none: past the
     timeout the caller falls back to the customer's own words.
+
+    A reasoning model rejects `temperature` and spends part of its output budget on thinking, so
+    when the role has a reasoning effort we send that instead and allow a larger output budget.
     """
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
+    spec = model_for(settings, Role.REWRITE)
+    sampling: dict[str, Any] = (
+        {"reasoning_effort": spec.effort, "max_tokens": 256}
+        if spec.effort
+        else {"temperature": 0, "max_tokens": 64}
+    )
     llm = AzureChatOpenAI(
         azure_endpoint=settings.azure_openai_endpoint,
-        azure_deployment=deployment or settings.azure_openai_rewrite_deployment,
-        api_version="2024-10-21",
+        azure_deployment=deployment or spec.deployment,
+        api_version=settings.azure_openai_chat_api_version,
         azure_ad_token_provider=get_bearer_token_provider(
             DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
         ),
-        temperature=0,
-        max_tokens=64,
         timeout=settings.rewrite_timeout_seconds,
         max_retries=0,
+        **sampling,
     )
     return _PROMPT | llm | StrOutputParser()
 

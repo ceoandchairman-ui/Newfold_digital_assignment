@@ -58,11 +58,27 @@ DEVICE = ServerSpec(
     ),
 )
 
-ALL_SERVERS: tuple[ServerSpec, ...] = (DATABASE, COMMS, DEVICE, ACCOUNT, CRM)
+# Third-party providers. Each runs a stub until its credentials exist (see config.py).
+TWILIO = ServerSpec("twilio_sms", 8006, frozenset({"send_sms", "get_message_status"}))
+STRIPE = ServerSpec("stripe", 8007, frozenset({"get_payment_status", "reconcile_payment_attempt"}))
+GMAIL = ServerSpec("gmail", 8008, frozenset({"send_email", "get_support_thread"}))
+DRIVE = ServerSpec("google_drive", 8009, frozenset({"search_documents", "read_document"}))
+
+ALL_SERVERS: tuple[ServerSpec, ...] = (
+    DATABASE, COMMS, DEVICE, ACCOUNT, CRM, TWILIO, STRIPE, GMAIL, DRIVE,
+)  # fmt: skip
 
 # Tools that change state. The client never retries these on its own: a retry after a lost reply
 # could send a second SMS. (process_payment is idempotent by key, but is still not auto-retried.)
-WRITE_TOOLS: frozenset[str] = frozenset({"process_payment", "send_notification"})
+WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "process_payment",
+        "send_notification",
+        "send_sms",
+        "send_email",
+        "reconcile_payment_attempt",
+    }
+)
 
 
 def server_urls(settings: Settings) -> Mapping[str, str]:
@@ -73,4 +89,8 @@ def server_urls(settings: Settings) -> Mapping[str, str]:
         DEVICE.name: settings.mcp_device_url,
         ACCOUNT.name: settings.mcp_account_url,
         CRM.name: settings.mcp_crm_url,
+        TWILIO.name: settings.mcp_twilio_url,
+        STRIPE.name: settings.mcp_stripe_url,
+        GMAIL.name: settings.mcp_gmail_url,
+        DRIVE.name: settings.mcp_drive_url,
     }

@@ -181,13 +181,14 @@ async def test_chat_without_verification_never_reaches_the_orchestrator(client):
     assert r.status_code == 401 and client.orch_calls == []
 
 
-async def test_troubleshooting_messages_are_routed_and_billing_ones_are_not(client):
+async def test_the_backend_passes_a_keyword_hint_and_leaves_routing_to_the_graph(client):
     await client.post(
         "/verify", json={"session_id": "S1", "phone": "+1", "date_of_birth": "1990-05-01"}
     )
     await client.post("/chat", json={"session_id": "S1", "message": "my phone has no signal"})
     await client.post("/chat", json={"session_id": "S1", "message": "what is my bill"})
-    assert [c[1]["route"] for c in client.orch_calls] == ["troubleshoot", "billing"]
+    assert [c[1]["route_hint"] for c in client.orch_calls] == ["TROUBLESHOOT", "BILLING"]
+    assert all("route" not in c[1] for c in client.orch_calls)
 
 
 async def test_chat_rejects_empty_and_oversized_messages(client):
