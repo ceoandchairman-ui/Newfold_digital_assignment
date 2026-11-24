@@ -413,14 +413,14 @@ def channel(monkeypatch):
     )
     calls: list[tuple[str, Any]] = []
 
-    async def verify(body):
+    async def verify(body, ip):
         calls.append(("verify", body.phone))
         if body.date_of_birth.isoformat() != "1990-05-01":
             raise AuthenticationError("no")
         await backend.app.state.redis.set(f"verified:{body.session_id}", "C1")
         return {"verified": True}
 
-    async def chat(body):
+    async def chat(body, ip):
         calls.append(("chat", body.message))
         return {"reply": "Your plan is Plus & <b>cheap</b>.", "pending_approval": None}
 
@@ -432,8 +432,8 @@ def channel(monkeypatch):
         return backend.app.state.pending
 
     backend.app.state.pending = None
-    monkeypatch.setattr(backend, "verify", verify)
-    monkeypatch.setattr(backend, "chat", chat)
+    monkeypatch.setattr(backend, "verify_identity", verify)
+    monkeypatch.setattr(backend, "run_chat", chat)
     monkeypatch.setattr(backend, "approve", approve)
     monkeypatch.setattr(backend, "_pending_for", pending)
     c = httpx.AsyncClient(

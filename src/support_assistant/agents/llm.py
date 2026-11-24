@@ -2,15 +2,18 @@
 
 `MafLLM` runs a Microsoft Agent Framework agent against Azure OpenAI with Entra auth.
 `TemplateLLM` keeps the services runnable and fully testable without any model.
+`ResilientLLM` gives each call a deadline and a fallback deployment.
 `build_role_llm` and `build_support_llms` pick the model for each job from settings (models.py).
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Protocol
 
 from support_assistant.config import Settings
 from support_assistant.models import Role, model_for
+from support_assistant.observability import LLM_FALLBACKS
 
 
 class LLM(Protocol):
@@ -63,12 +66,50 @@ class MafLLM:
         return str(result.text)
 
 
+class ResilientLLM:
+    """A model call with a deadline and a fallback, so one slow or throttled deployment degrades the
+    answer instead of failing the turn.
+
+    The primary gets `timeout_s`. If it raises or times out, the fallback (a different deployment, so
+    usually a different quota) gets the same budget. If there is no fallback, or it fails too, the
+    error reaches the caller, which already has its own safe behaviour (a template, an escalation).
+    """
+
+    def __init__(
+        self, primary: LLM, fallback: LLM | None, timeout_s: float, name: str = ""
+    ) -> None:
+        self._primary, self._fallback, self._timeout, self._name = (
+            primary,
+            fallback,
+            timeout_s,
+            name,
+        )
+
+    async def respond(self, instructions: str, facts: str, user_message: str) -> str:
+        try:
+            return await asyncio.wait_for(
+                self._primary.respond(instructions, facts, user_message), self._timeout
+            )
+        except Exception as exc:  # noqa: BLE001 - includes TimeoutError and provider errors
+            if self._fallback is None:
+                raise
+            LLM_FALLBACKS.add(1, {"role": self._name, "reason": type(exc).__name__})
+        return await asyncio.wait_for(
+            self._fallback.respond(instructions, facts, user_message), self._timeout
+        )
+
+
 def build_role_llm(settings: Settings, role: Role) -> LLM:
-    """The model configured for one role. Without an OpenAI endpoint, a template (no model)."""
+    """The model configured for one role, with its timeout and fallback. Without an OpenAI endpoint,
+    a template (no model)."""
     if not settings.azure_openai_endpoint:
         return TemplateLLM()
     spec = model_for(settings, role)
-    return MafLLM(settings, spec.deployment, spec.effort)
+    primary = MafLLM(settings, spec.deployment, spec.effort)
+    fallback = None
+    if spec.fallback and spec.fallback != spec.deployment:
+        fallback = MafLLM(settings, spec.fallback, None)  # no effort: the fallback may be any model
+    return ResilientLLM(primary, fallback, settings.llm_timeout_seconds, role.value)
 
 
 SUPPORT_ROLES = ("route", "normal", "instruct", "billing")

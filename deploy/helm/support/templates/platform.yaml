@@ -19,7 +19,7 @@ spec:
         spec:
           serviceAccountName: fat-backend   # reuses the backend identity (Postgres access)
           restartPolicy: OnFailure
-          securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+          securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
           containers:
             - name: job
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -32,6 +32,7 @@ spec:
                 {{- end }}
                 - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-fat-backend" }
               resources: {{ toJson .Values.resources }}
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
               volumeMounts:
                 - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }
           volumes:

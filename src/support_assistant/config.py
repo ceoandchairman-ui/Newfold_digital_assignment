@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     llm_troubleshooter_effort: ReasoningEffort | None = "medium"
     llm_judge_deployment: str = "chat-judge"  # eval_agent: LLM-as-judge groundedness check
     llm_judge_effort: ReasoningEffort | None = "low"
+    # If a role's model fails or times out, this deployment answers instead (a quota limit is per
+    # deployment, so a 429 on one is usually survivable on another). None means no fallback.
+    llm_chat_fallback_deployment: str | None = "chat-planner"
+    llm_planner_fallback_deployment: str | None = "chat-support"
+    llm_troubleshooter_fallback_deployment: str | None = "chat-planner"
     # The rewrite and the judge sit on the customer's wait. Past the timeout each falls back
     # (the raw message; "no objection") instead of delaying or failing the turn.
     rewrite_timeout_seconds: float = Field(1.5, gt=0)
@@ -112,6 +117,35 @@ class Settings(BaseSettings):
     troubleshooter_tool_steps: int = Field(3, ge=0, le=5)
     # Per-customer daily cap on estimated input tokens (E6-5). 0 disables the cap.
     daily_token_budget: int = Field(50_000, ge=0)
+
+    # --- Security (see docs/04_resiliency_and_security.md) --------------------------------------
+    # A session id is a bearer token: it must be long and random. 0 disables the rule (tests only).
+    min_session_id_length: int = Field(32, ge=0)
+    # Identity-guessing lockout: failed /verify attempts per session, per person being guessed
+    # (phone or name) and per caller address, within one window. The caller waits out the window.
+    verify_max_failures_session: int = Field(5, ge=1)
+    verify_max_failures_subject: int = Field(10, ge=1)
+    verify_max_failures_ip: int = Field(30, ge=1)
+    verify_window_seconds: int = Field(900, ge=1)
+    # Request rates (per minute). Chat is capped per customer and per caller address.
+    chat_rate_per_minute: int = Field(30, ge=1)
+    ip_rate_per_minute: int = Field(120, ge=1)
+    # How many reverse proxies we run in front of the API; only then is X-Forwarded-For believed.
+    trusted_proxy_hops: int = Field(0, ge=0, le=5)
+
+    # --- Resilience -------------------------------------------------------------------------------
+    # Turns in flight per backend pod before it answers 503 instead of queueing.
+    max_inflight_turns: int = Field(64, ge=1)
+    # The whole graph run for one message must finish in this long (a payment resume is exempt).
+    turn_timeout_seconds: float = Field(45.0, gt=0)
+    # Calls from the orchestrator to an agent service: a breaker opens after this many failures in a
+    # row and stays open for the cooldown, so a dead agent costs microseconds instead of timeouts.
+    agent_circuit_threshold: int = Field(5, ge=1)
+    agent_circuit_cooldown_seconds: float = Field(30.0, gt=0)
+    # One model call must answer in this long, else its fallback deployment (if any) is tried.
+    llm_timeout_seconds: float = Field(30.0, gt=0)
+    # A client-supplied id that makes a retried /chat message run once.
+    idempotency_ttl_seconds: int = Field(300, ge=1)
     # --- Document storage (E2-2, E13). Private blob accounts, Entra auth, no keys. ----------------
     # Team documents the indexer reads (trusted reference material).
     docs_storage_account: str | None = None

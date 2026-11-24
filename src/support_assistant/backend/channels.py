@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from support_assistant import repositories as repo
 from support_assistant.errors import AuthenticationError, SupportError
 from support_assistant.integrations.twilio_client import valid_twilio_signature
+from support_assistant.security import channel_session_id, subject_key
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/channels/twilio")
@@ -75,7 +76,14 @@ async def converse(phone: str, text: str, message_sid: str) -> str | None:
         customer = await repo.get_customer_by_phone(conn, phone)
     if customer is None:
         return UNKNOWN  # the same answer for every unknown number
-    session_id = f"twilio:{phone}"
+    s = backend.app.state.s
+    token = s.twilio_auth_token.get_secret_value() if s.twilio_auth_token else ""
+    if not token:
+        return TROUBLE  # cannot happen through the webhook, which checks the token first
+    # A phone number is not a secret, so the session id is derived with a keyed hash: knowing a number
+    # does not let anyone compute the id and use the web API as that customer.
+    session_id = channel_session_id(token, "twilio", phone)
+    caller = "twilio:" + subject_key(phone)  # rate limits are per phone, not one shared bucket
     try:
         if not await redis.get(f"verified:{session_id}"):
             try:
@@ -83,8 +91,9 @@ async def converse(phone: str, text: str, message_sid: str) -> str | None:
             except ValueError:
                 return ASK_DOB
             try:
-                await backend.verify(
-                    backend.VerifyBody(session_id=session_id, phone=phone, date_of_birth=dob)
+                await backend.verify_identity(
+                    backend.VerifyBody(session_id=session_id, phone=phone, date_of_birth=dob),
+                    caller,
                 )
             except AuthenticationError:
                 return NOT_VERIFIED
@@ -96,8 +105,8 @@ async def converse(phone: str, text: str, message_sid: str) -> str | None:
                 backend.ApproveBody(session_id=session_id, approved=answer in YES)
             )
         else:
-            result = await backend.chat(
-                backend.ChatBody(session_id=session_id, message=text[:2000])
+            result = await backend.run_chat(
+                backend.ChatBody(session_id=session_id, message=text[:2000]), caller
             )
         if result.get("pending_approval"):
             return _question(result["pending_approval"])

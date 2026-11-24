@@ -32,18 +32,32 @@ from support_assistant.db import make_pool
 from support_assistant.embeddings import HttpEmbedder
 from support_assistant.errors import (
     AuthenticationError,
+    DuplicateOperation,
     ExternalServiceUnavailable,
+    Overloaded,
+    RateLimited,
     SupportError,
     UploadRejected,
 )
 from support_assistant.memory import SessionMemory
 from support_assistant.observability import (
     BUDGET_REFUSALS,
+    LOAD_SHED,
     PROMPT_ATTACKS,
+    RATE_LIMITED,
     RequestContextMiddleware,
     outgoing_headers,
 )
 from support_assistant.redis_factory import make_redis
+from support_assistant.security import (
+    BodyLimitMiddleware,
+    Bulkhead,
+    RateLimiter,
+    SecurityHeadersMiddleware,
+    client_ip,
+    subject_key,
+    valid_session_id,
+)
 from support_assistant.services.episodes import save_episode, search_episodes
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
 from support_assistant.uploads import UploadService
@@ -76,6 +90,8 @@ class EndBody(BaseModel):
 class ChatBody(BaseModel):
     session_id: str = Field(min_length=1)
     message: str = Field(min_length=1, max_length=2000)
+    # Optional. A client that retries a message sends the same id, and the message then runs once.
+    message_id: str | None = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ApproveBody(BaseModel):
@@ -90,6 +106,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await pool.open()
     redis = make_redis(s.redis_url.get_secret_value(), s, decode_responses=True)
     app.state.s, app.state.pool, app.state.redis = s, pool, redis
+    app.state.limiter = RateLimiter(redis)
+    app.state.bulkhead = Bulkhead(s.max_inflight_turns)
     app.state.memory = SessionMemory(pool, redis, s.redis_window_size, s.redis_session_ttl_s)
     app.state.budget = TokenBudget(redis, s.daily_token_budget) if s.daily_token_budget else None
     app.state.uploads = None
@@ -141,15 +159,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="fat-backend", lifespan=lifespan)
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(BodyLimitMiddleware)  # outside the app: an oversized body is refused unread
+app.add_middleware(SecurityHeadersMiddleware)  # outermost: even a 413 carries the headers
 instrument_fastapi(app)  # W3C traceparent in, server spans out
 app.include_router(twilio_router)  # the inbound Twilio chat channel (off unless enabled)
 
 
 @app.exception_handler(SupportError)
 async def support_error_handler(_: Request, exc: SupportError) -> JSONResponse:
+    headers = {}
+    if (wait := getattr(exc, "retry_after", None)) is not None:
+        headers["Retry-After"] = str(wait)  # 429 and 503: when to come back
     return JSONResponse(
-        status_code=exc.http_status, content={"error": exc.code, "message": exc.customer_message}
+        status_code=exc.http_status,
+        content={"error": exc.code, "message": exc.customer_message},
+        headers=headers,
     )
+
+
+def _cfg(name: str, default: Any) -> Any:
+    """A setting, or a default where lifespan is bypassed (tests that set a partial settings stub)."""
+    return getattr(getattr(app.state, "s", None), name, default)
+
+
+def _caller(request: Request) -> str:
+    peer = request.client.host if request.client else None
+    return client_ip(request.headers, peer, int(_cfg("trusted_proxy_hops", 0)))
+
+
+@asynccontextmanager
+async def _slot() -> AsyncIterator[None]:
+    """A place in this pod's concurrency limit, or Overloaded (a fast 503 with Retry-After)."""
+    bulkhead = getattr(app.state, "bulkhead", None)
+    if bulkhead is None:
+        yield
+        return
+    try:
+        async with bulkhead.slot():
+            yield
+    except Overloaded:
+        LOAD_SHED.add(1)
+        raise
 
 
 @app.get("/healthz")
@@ -157,7 +207,15 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _check_session_id(session_id: str) -> None:
+    """A session id is a bearer token. A short or guessable one is refused with the same answer as
+    an unverified session, so nothing is learned from the refusal."""
+    if not valid_session_id(session_id, int(_cfg("min_session_id_length", 0))):
+        raise AuthenticationError("invalid session id")
+
+
 async def _verified_customer(session_id: str) -> str:
+    _check_session_id(session_id)
     cid = await app.state.redis.get(f"verified:{session_id}")
     if not cid:
         raise AuthenticationError("session not verified")
@@ -165,7 +223,38 @@ async def _verified_customer(session_id: str) -> str:
 
 
 @app.post("/verify")
-async def verify(body: VerifyBody) -> dict[str, bool]:
+async def verify(body: VerifyBody, request: Request) -> dict[str, bool]:
+    return await verify_identity(body, _caller(request))
+
+
+async def verify_identity(body: VerifyBody, ip: str) -> dict[str, bool]:
+    """Identity check with a lockout, because a date of birth is a small secret and can be guessed.
+
+    Failed attempts are counted three ways: against this session, against the person being guessed
+    (the phone or name, whether or not they exist, so the lockout does not reveal who is a customer),
+    and against the caller's address. Reaching any limit locks that key out for the window. If the
+    counters themselves are unavailable the check fails CLOSED: better a customer retries than an
+    attacker gets unlimited guesses.
+    """
+    _check_session_id(body.session_id)
+    limiter: RateLimiter | None = getattr(app.state, "limiter", None)
+    window = int(_cfg("verify_window_seconds", 900))
+    subject = subject_key(body.phone or "", body.full_name or "")
+    keys = [
+        (f"vf:s:{body.session_id}", int(_cfg("verify_max_failures_session", 5))),
+        (f"vf:p:{subject}", int(_cfg("verify_max_failures_subject", 10))),
+        (f"vf:i:{ip}", int(_cfg("verify_max_failures_ip", 30))),
+    ]
+    if limiter is not None:
+        try:
+            for key, limit in keys:
+                if (wait := await limiter.blocked(key, limit)) is not None:
+                    RATE_LIMITED.add(1, {"kind": "verify"})
+                    raise RateLimited(wait)
+        except RateLimited:
+            raise
+        except Exception as exc:  # noqa: BLE001 - cannot count, so cannot safely let guesses through
+            raise ExternalServiceUnavailable("rate limiter unavailable") from exc
     async with app.state.pool.connection() as conn:
         if body.phone:
             row = await repo.get_customer_by_phone(conn, body.phone)
@@ -176,8 +265,20 @@ async def verify(body: VerifyBody) -> dict[str, bool]:
             row = matches[0] if len(matches) == 1 else None  # ambiguous name: refuse, never guess
     # Same answer for unknown customer, wrong DOB and ambiguous name: no account enumeration.
     if row is None or row["date_of_birth"] != body.date_of_birth:
+        if limiter is not None:
+            for key, _ in keys:
+                try:
+                    await limiter.record(key, window)
+                except Exception:  # noqa: BLE001 - the failure is still refused
+                    log.warning("verify_failure_not_counted")
         raise AuthenticationError("verification failed")
     await app.state.redis.set(f"verified:{body.session_id}", row["id"], ex=VERIFIED_TTL_S)
+    if limiter is not None:
+        for key, _ in keys[:2]:  # a success clears the session and the person, never the address
+            try:
+                await limiter.reset(key)
+            except Exception:  # noqa: BLE001
+                log.warning("verify_counter_not_reset")
     return {"verified": True}
 
 
@@ -193,8 +294,67 @@ async def _orchestrate(path: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/chat")
-async def chat(body: ChatBody) -> dict[str, Any]:
+async def chat(body: ChatBody, request: Request) -> dict[str, Any]:
+    return await run_chat(body, _caller(request))
+
+
+async def _admit(customer_id: str, ip: str) -> None:
+    """Request-rate limits. A failing limiter lets the request through: unlike identity, a missed
+    rate limit costs money (tokens), not safety, and the daily token budget still applies."""
+    limiter: RateLimiter | None = getattr(app.state, "limiter", None)
+    if limiter is None:
+        return
+    try:
+        await limiter.hit(f"chat:c:{customer_id}", int(_cfg("chat_rate_per_minute", 30)), 60)
+        await limiter.hit(f"chat:i:{ip}", int(_cfg("ip_rate_per_minute", 120)), 60)
+    except RateLimited:
+        RATE_LIMITED.add(1, {"kind": "chat"})
+        raise
+    except Exception:  # noqa: BLE001
+        log.warning("rate_limiter_unavailable")
+
+
+async def run_chat(body: ChatBody, ip: str) -> dict[str, Any]:
+    """One customer message: checks, then the turn, run at most once per `message_id`."""
     customer_id = await _verified_customer(body.session_id)
+    await _admit(customer_id, ip)
+    redis = app.state.redis
+    ttl = int(_cfg("idempotency_ttl_seconds", 300))
+    idem = f"idem:{customer_id}:{body.message_id}" if body.message_id else None
+    if idem is not None:
+        try:
+            prior = await redis.get(idem)
+            if prior == "pending":  # the same message is still being worked on
+                raise DuplicateOperation("message in progress")
+            if prior:  # the same message already ran: return its answer, run nothing
+                replayed: dict[str, Any] = json.loads(prior)
+                return replayed
+            if not await redis.set(idem, "pending", ex=ttl, nx=True):
+                raise DuplicateOperation("message in progress")
+        except DuplicateOperation:
+            raise
+        except Exception:  # noqa: BLE001 - no idempotency without Redis, but the turn still works
+            idem = None
+            log.warning("idempotency_unavailable")
+    try:
+        async with _slot():
+            result = await _chat_turn(body, customer_id)
+    except BaseException:
+        if idem is not None:  # a failed turn may be retried with the same id
+            try:
+                await redis.delete(idem)
+            except Exception:  # noqa: BLE001
+                log.warning("idempotency_marker_not_cleared")
+        raise
+    if idem is not None:
+        try:
+            await redis.set(idem, json.dumps(result), ex=ttl)
+        except Exception:  # noqa: BLE001
+            log.warning("idempotency_result_not_stored")
+    return result
+
+
+async def _chat_turn(body: ChatBody, customer_id: str) -> dict[str, Any]:
     # E4-9: a payment confirmation left open in an earlier session is offered again here.
     pending = await _pending_for(customer_id)
     if pending and pending["session_id"] != body.session_id:

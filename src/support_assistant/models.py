@@ -31,17 +31,24 @@ class Role(StrEnum):
 class ModelSpec:
     deployment: str
     effort: str | None  # reasoning effort for reasoning models; None for a model that has none
+    fallback: str | None = None  # answers instead when this deployment fails or times out
 
 
 def model_for(settings: Settings, role: Role) -> ModelSpec:
-    """The deployment and reasoning effort configured for a role."""
+    """The deployment, reasoning effort and fallback configured for a role."""
     s = settings
     return {
-        Role.CHAT: ModelSpec(s.llm_chat_deployment, s.llm_chat_effort),
-        Role.PLANNER: ModelSpec(s.llm_planner_deployment, s.llm_planner_effort),
+        Role.CHAT: ModelSpec(
+            s.llm_chat_deployment, s.llm_chat_effort, s.llm_chat_fallback_deployment
+        ),
+        Role.PLANNER: ModelSpec(
+            s.llm_planner_deployment, s.llm_planner_effort, s.llm_planner_fallback_deployment
+        ),
         Role.REWRITE: ModelSpec(s.llm_rewrite_deployment, s.llm_rewrite_effort),
         Role.TROUBLESHOOTER: ModelSpec(
-            s.llm_troubleshooter_deployment, s.llm_troubleshooter_effort
+            s.llm_troubleshooter_deployment,
+            s.llm_troubleshooter_effort,
+            s.llm_troubleshooter_fallback_deployment,
         ),
         Role.JUDGE: ModelSpec(s.llm_judge_deployment, s.llm_judge_effort),
     }[role]

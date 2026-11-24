@@ -6,6 +6,7 @@ low. Postgres is not on this path except for the retriever's knowledge-base quer
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -24,12 +25,13 @@ from support_assistant.audit import BackgroundAudit, PgAuditSink
 from support_assistant.config import get_settings
 from support_assistant.db import make_pool
 from support_assistant.embeddings import HttpEmbedder
-from support_assistant.errors import SupportError
+from support_assistant.errors import ExternalServiceUnavailable, SupportError
 from support_assistant.locks import RunLock
 from support_assistant.mcp_catalog import server_urls
 from support_assistant.observability import (
     ESCALATIONS,
     TURN_LATENCY_MS,
+    TURN_TIMEOUTS,
     TURNS,
     RequestContextMiddleware,
 )
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await saver.asetup()  # creates the RediSearch indexes; needs RediSearch + RedisJSON modules
 
     app.state.lock = RunLock(redis, ttl_ms=settings.run_lock_ttl_ms)
+    app.state.turn_timeout = settings.turn_timeout_seconds
 
     mcp = McpRegistry(server_urls(settings))  # the orchestrator only pays; it reads no cached data
     tool_redis = (
@@ -178,15 +181,26 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-async def _run(session_id: str, graph_input: Any) -> TurnResult:
-    """One active run per session (E4-12): a Redis lock around the whole turn."""
+async def _run(session_id: str, graph_input: Any, deadline_s: float | None = None) -> TurnResult:
+    """One active run per session (E4-12): a Redis lock around the whole turn.
+
+    `deadline_s` bounds the run. A turn that overruns is cancelled and the customer is told to try
+    again, instead of waiting on a stuck agent until the caller's own timeout fires. It is only given
+    to a new message: a resume may execute the payment, and cancelling that mid-call would only
+    leave a PENDING attempt for reconcile_payment to clean up, which is better avoided.
+    """
     cfg = {"configurable": {"thread_id": session_id}}
     started = time.perf_counter()
     async with app.state.lock.hold(session_id):
         # Latency: "async" writes each checkpoint in the background while the next node runs,
         # instead of blocking before it. Safe here because the payment node uses a stable
         # idempotency key, so a replay after a crash cannot charge twice.
-        out = await app.state.graph.ainvoke(graph_input, cfg, durability="async")
+        try:
+            async with asyncio.timeout(deadline_s):  # None means no deadline
+                out = await app.state.graph.ainvoke(graph_input, cfg, durability="async")
+        except TimeoutError:
+            TURN_TIMEOUTS.add(1)
+            raise ExternalServiceUnavailable("turn deadline exceeded") from None
     # Persist this turn's tool calls in the background (E5-5): the customer never waits for it.
     app.state.audit.submit(
         session_id, str(out.get("customer_id", "")), list(out.get("audit") or [])
@@ -215,7 +229,8 @@ async def invoke(body: InvokeBody) -> TurnResult:
         schema_version=STATE_SCHEMA_VERSION,
     )
     try:
-        return await _run(body.session_id, state)
+        deadline = getattr(app.state, "turn_timeout", None)
+        return await _run(body.session_id, state, deadline_s=deadline)
     except SupportError as exc:
         raise HTTPException(exc.http_status, detail=exc.customer_message) from exc
 

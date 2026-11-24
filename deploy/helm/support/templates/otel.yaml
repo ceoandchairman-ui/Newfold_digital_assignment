@@ -143,7 +143,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: otel-collector
-      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: collector
           image: {{ $.Values.otel.image | quote }}
@@ -160,7 +160,7 @@ spec:
           readinessProbe: { httpGet: { path: /, port: 13133 } }
           livenessProbe: { httpGet: { path: /, port: 13133 }, initialDelaySeconds: 10 }
           resources: {{ toJson $.Values.otel.resources }}
-          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           volumeMounts:
             - { name: conf, mountPath: /conf }
             # Mounting makes the CSI driver create the `otel-azuremonitor` secret used above.

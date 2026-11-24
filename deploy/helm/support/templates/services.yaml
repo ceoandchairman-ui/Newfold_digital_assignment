@@ -24,7 +24,10 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: {{ $name }}
-      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      # Graceful shutdown: on SIGTERM the pod first leaves the Service (preStop sleep, so no new
+      # request arrives while it drains), then uvicorn finishes what is in flight, inside this window.
+      terminationGracePeriodSeconds: 45
       containers:
         - name: app
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
@@ -54,7 +57,9 @@ spec:
             - { name: REDIS_ENTRA_OBJECT_ID, value: {{ . | quote }} }
             {{- end }}
           resources: {{ toJson $.Values.resources }}
-          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          lifecycle:
+            preStop: { exec: { command: ["sleep", "10"] } }
           # The root filesystem is read-only, so libraries that need scratch space get a /tmp.
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
