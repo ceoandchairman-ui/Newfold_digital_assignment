@@ -50,9 +50,16 @@ services:
     worker: true   # no HTTP probes or Service
     clientId: ""
     objectId: ""   # terraform output workload_principal_ids
+  index-worker:
+    command: ["python", "-m", "support_assistant.index_worker"]
+    ports: []
+    replicas: 1      # one is enough; a second would only wait on the advisory lock
+    worker: true     # no HTTP probes or Service
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
   mcp-servers:
     command: ["python", "-m", "support_assistant.mcp_servers.main"]
-    ports: [8001, 8002, 8003]
+    ports: [8001, 8002, 8003, 8004, 8005]
     replicas: 2
     clientId: ""
     objectId: ""   # terraform output workload_principal_ids
@@ -143,8 +150,10 @@ signing:
 jobIdentities:
   indexer: { clientId: "", objectId: "" }
 
-# Indexes the team's documents from the knowledge-base blob container into pgvector. A change to a
-# document is picked up at the next run; trigger one by hand with:
+# Indexes the team's documents from the knowledge-base blob container into pgvector. The
+# `index-worker` Deployment notices an upload, edit or delete within about a minute; this CronJob is
+# the safety net (and runs once after each deploy). A run can also be started with the GitHub
+# workflow `index-now`, or by hand:
 #   kubectl -n support create job --from=cronjob/indexer indexer-now
 indexer:
   schedule: "0 */6 * * *"

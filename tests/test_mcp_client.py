@@ -10,9 +10,15 @@ from support_assistant.agents.harness import Harness
 from support_assistant.agents.mcp_client import McpRegistry, StaticRegistry
 from support_assistant.contracts import AgentRequest
 from support_assistant.errors import AuthorizationError, NotFoundError
-from support_assistant.mcp_catalog import ALL_SERVERS, COMMS, DATABASE, DEVICE
+from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, COMMS, CRM, DATABASE, DEVICE
 
-URLS = {DATABASE.name: "http://db", COMMS.name: "http://comms", DEVICE.name: "http://dev"}
+URLS = {
+    DATABASE.name: "http://db",
+    COMMS.name: "http://comms",
+    DEVICE.name: "http://dev",
+    ACCOUNT.name: "http://account",
+    CRM.name: "http://crm",
+}
 
 
 class FakeConn:
@@ -59,7 +65,11 @@ async def test_each_tool_is_routed_to_the_server_that_hosts_it():
     assert (await reg.call("get_bills", {"customer_id": "C1"}))["from"] == "http://db"
     assert (await reg.call("send_notification", {"customer_id": "C1"}))["from"] == "http://comms"
     assert (await reg.call("run_diagnostics", {"customer_id": "C1"}))["from"] == "http://dev"
-    assert [len(c.calls) for c in conns.values()] == [1, 1, 1]
+    assert (await reg.call("get_customer_profile", {"customer_id": "C1"}))[
+        "from"
+    ] == "http://account"
+    assert (await reg.call("get_case_history", {"customer_id": "C1"}))["from"] == "http://crm"
+    assert [len(c.calls) for c in conns.values()] == [1] * len(ALL_SERVERS)
 
 
 def test_the_registry_knows_exactly_the_cataloged_tools():
@@ -87,7 +97,7 @@ async def test_a_result_without_structured_content_is_reported_not_trusted():
 async def test_close_closes_every_connection():
     reg, conns = make_registry()
     await reg.aclose()
-    assert len(conns) == 3 and all(c.closed for c in conns.values())
+    assert len(conns) == len(ALL_SERVERS) and all(c.closed for c in conns.values())
 
 
 # --- readiness (verify) -----------------------------------------------------------------------------------

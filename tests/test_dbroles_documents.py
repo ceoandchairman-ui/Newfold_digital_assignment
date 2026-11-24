@@ -29,6 +29,11 @@ def test_the_backend_can_manage_uploads_for_accept_scan_status_and_erasure():
     assert 'GRANT SELECT, INSERT, UPDATE, DELETE ON "customer_uploads"' in _text("fat-backend")
 
 
-def test_no_service_other_than_the_indexer_and_orchestrator_and_troubleshooter_reads_the_manual():
+def test_only_the_indexers_orchestrator_and_troubleshooter_touch_the_manual():
     readers = {w for w in dbroles.GRANTS if '"knowledge_base_chunks"' in _text(w)}
-    assert readers == {"indexer", "orchestrator", "agent-troubleshooter"}
+    assert readers == {"indexer", "index-worker", "orchestrator", "agent-troubleshooter"}
+
+
+def test_the_index_worker_has_exactly_the_indexers_rights():
+    assert dbroles.GRANTS["index-worker"] == dbroles.GRANTS["indexer"]
+    assert "GRANT USAGE, SELECT ON ALL SEQUENCES" in _text("index-worker")

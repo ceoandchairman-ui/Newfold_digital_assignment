@@ -32,6 +32,8 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
             "SELECT",
             ["customers", "plans", "payment_methods", "lines", "devices", "bill_line_items"],
         ),
+        # The crm server reads the customer's past cases and recent conversations (read-only).
+        ("SELECT", ["customer_episodes", "session_conversations"]),
         ("SELECT, UPDATE", ["bills"]),
         ("SELECT, INSERT, UPDATE", ["transaction_history"]),
     ],
@@ -44,6 +46,8 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
     ],
     # Mirrors the team's documents into the knowledge base: add new chunks, remove stale ones.
     "indexer": [("SELECT, INSERT, DELETE", ["knowledge_base_chunks"])],
+    # Same job, run continuously: indexes a document soon after the team uploads it.
+    "index-worker": [("SELECT, INSERT, DELETE", ["knowledge_base_chunks"])],
     # Graph-node retrieval and the audit trail.
     "orchestrator": [
         ("SELECT", ["knowledge_base_chunks"]),

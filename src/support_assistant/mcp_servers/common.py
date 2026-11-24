@@ -22,6 +22,14 @@ def plain(row: dict[str, Any]) -> dict[str, Any]:
     return {k: (str(v) if isinstance(v, (Decimal, date)) else v) for k, v in row.items()}
 
 
+def mask_email(email: str | None) -> str | None:
+    """j***@example.com: enough to confirm which address is on file, never the whole address."""
+    if not email or "@" not in email:
+        return None
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}***@{domain}"
+
+
 def safe(exc: Exception) -> dict[str, Any]:
     """Turn any exception into a customer-safe tool result. Unexpected errors are logged, not shown."""
     if not isinstance(exc, SupportError):

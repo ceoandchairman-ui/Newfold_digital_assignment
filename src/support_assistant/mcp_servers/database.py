@@ -68,6 +68,16 @@ def build_database_server(
             return safe(exc)
 
     @server.tool()
+    async def get_payment_methods(customer_id: str) -> dict[str, Any]:
+        """The customer's payment methods: kind and last four digits only."""
+        try:
+            async with pool.connection() as conn:
+                rows = await repo.list_payment_methods(conn, customer_id)
+            return {"ok": True, "payment_methods": [plain(r) for r in rows]}
+        except Exception as exc:  # noqa: BLE001
+            return safe(exc)
+
+    @server.tool()
     async def process_payment(
         customer_id: str, bill_id: str, amount: str, idempotency_key: str | None = None
     ) -> dict[str, Any]:

@@ -54,17 +54,22 @@ class MafLLM:
 class Tier(StrEnum):
     SMALL = "small"
     LARGE = "large"
+    REASONING = "reasoning"  # only when a reasoning deployment is configured
 
 
 # A turn is "hard" when the model must reason over several facts or a proposed action.
 HARD_FACTS_CHARS = 600
 HARD_MESSAGE_CHARS = 400
 _HARD_MARKERS = ("proposed:", "overdue", "dispute", "refund", "cancel", "why ")
+# The subset that needs real multi-step reasoning (policy and amounts), worth the extra seconds.
+_REASONING_MARKERS = ("dispute", "refund", "cancel")
 
 
-def pick_tier(facts: str, user_message: str) -> Tier:
+def pick_tier(facts: str, user_message: str, *, reasoning_available: bool = False) -> Tier:
     """Deterministic, cheap routing signal. Easy turns go to the small model."""
     text = f"{facts} {user_message}".lower()
+    if reasoning_available and any(marker in text for marker in _REASONING_MARKERS):
+        return Tier.REASONING
     if len(facts) > HARD_FACTS_CHARS or len(user_message) > HARD_MESSAGE_CHARS:
         return Tier.LARGE
     if any(marker in text for marker in _HARD_MARKERS):
@@ -73,24 +78,26 @@ def pick_tier(facts: str, user_message: str) -> Tier:
 
 
 class TieredLLM:
-    """Routes each call to a small or large model (multi-tier LLMs inside one agent).
+    """Routes each call to a small, large or (optionally) reasoning model, inside one agent.
 
     The tier belongs to the call, not to the agent: a MAF `Agent` is cheap to build over any chat
-    client, so the router holds one client per tier. If the small model fails, the large one is
-    tried, so a cheap-tier outage degrades cost, not availability.
+    client, so the router holds one client per tier. If the small or reasoning model fails, the
+    large one is tried, so a tier outage degrades cost or depth, not availability.
     """
 
-    def __init__(self, small: LLM, large: LLM) -> None:
-        self._by_tier = {Tier.SMALL: small, Tier.LARGE: large}
+    def __init__(self, small: LLM, large: LLM, reasoning: LLM | None = None) -> None:
+        self._by_tier: dict[Tier, LLM] = {Tier.SMALL: small, Tier.LARGE: large}
+        if reasoning is not None:
+            self._by_tier[Tier.REASONING] = reasoning
         self.last_tier: Tier | None = None  # for tests and telemetry
 
     async def respond(self, instructions: str, facts: str, user_message: str) -> str:
-        tier = pick_tier(facts, user_message)
+        tier = pick_tier(facts, user_message, reasoning_available=Tier.REASONING in self._by_tier)
         self.last_tier = tier
-        if tier is Tier.SMALL:
+        if tier is not Tier.LARGE:
             try:
-                return await self._by_tier[Tier.SMALL].respond(instructions, facts, user_message)
-            except Exception:  # noqa: BLE001 - any small-tier failure falls back to the large model
+                return await self._by_tier[tier].respond(instructions, facts, user_message)
+            except Exception:  # noqa: BLE001 - any non-large failure falls back to the large model
                 self.last_tier = Tier.LARGE
         return await self._by_tier[Tier.LARGE].respond(instructions, facts, user_message)
 
@@ -103,11 +110,36 @@ class TieredLLM:
         return result
 
 
-def build_llm(settings: Settings, deployment: str) -> LLM:
+def build_llm(settings: Settings, deployment: str, *, use_reasoning: bool = True) -> LLM:
     """`deployment` is the agent's large model; the small tier is shared (`chat-small`)."""
     if not settings.azure_openai_endpoint:
         return TemplateLLM()
     large = MafLLM(settings, deployment)
     if not settings.azure_openai_small_deployment:
         return large
-    return TieredLLM(MafLLM(settings, settings.azure_openai_small_deployment), large)
+    reasoning = (
+        MafLLM(settings, settings.azure_openai_reasoning_deployment)
+        if use_reasoning and settings.azure_openai_reasoning_deployment
+        else None
+    )
+    return TieredLLM(MafLLM(settings, settings.azure_openai_small_deployment), large, reasoning)
+
+
+def build_support_llms(settings: Settings, large_deployment: str) -> dict[str, LLM]:
+    """One model per sub-agent of the support_agent (E4-3, E4-4). The graph picks the sub-agent.
+
+    route   -> small model: a short, validated classification.
+    normal  -> small model: simple dialogue and plain questions.
+    instruct-> the reasoning deployment when configured, otherwise the large model.
+    billing -> the large model with the small tier for easy turns (tool-driven, proposes payments).
+    """
+    if not settings.azure_openai_endpoint:
+        return {k: TemplateLLM() for k in ("route", "normal", "instruct", "billing")}
+    small = MafLLM(settings, settings.azure_openai_small_deployment or large_deployment)
+    instruct_deployment = settings.azure_openai_reasoning_deployment or large_deployment
+    return {
+        "route": small,
+        "normal": small,
+        "instruct": MafLLM(settings, instruct_deployment),
+        "billing": build_llm(settings, large_deployment, use_reasoning=False),
+    }

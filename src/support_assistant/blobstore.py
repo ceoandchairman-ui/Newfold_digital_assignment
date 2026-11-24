@@ -24,6 +24,10 @@ class BlobStore(Protocol):
 
     async def list(self, prefix: str = "") -> list[str]: ...
 
+    async def etags(self, prefix: str = "") -> dict[str, str]:
+        """name -> version marker that changes whenever the blob's content changes."""
+        ...
+
     async def delete(self, name: str) -> None: ...
 
     async def tags(self, name: str) -> dict[str, str]: ...
@@ -53,6 +57,15 @@ class InMemoryBlobStore:
 
     async def list(self, prefix: str = "") -> list[str]:
         return sorted(n for n in self.blobs if n.startswith(prefix))
+
+    async def etags(self, prefix: str = "") -> dict[str, str]:
+        import hashlib
+
+        return {
+            n: hashlib.sha1(d).hexdigest()  # noqa: S324 - a change marker, not security
+            for n, d in sorted(self.blobs.items())
+            if n.startswith(prefix)
+        }
 
     async def delete(self, name: str) -> None:
         if name not in self.blobs:
@@ -118,6 +131,15 @@ class AzureBlobStore:
             return sorted(
                 [b.name async for b in self._container.list_blobs(name_starts_with=prefix)]
             )
+        except Exception as exc:  # noqa: BLE001
+            raise self._translate(exc, prefix) from exc
+
+    async def etags(self, prefix: str = "") -> dict[str, str]:
+        try:
+            return {
+                b.name: str(b.etag)
+                async for b in self._container.list_blobs(name_starts_with=prefix)
+            }
         except Exception as exc:  # noqa: BLE001
             raise self._translate(exc, prefix) from exc
 

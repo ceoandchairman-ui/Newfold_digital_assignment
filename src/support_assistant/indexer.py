@@ -23,6 +23,8 @@ import asyncio
 import hashlib
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -170,6 +172,29 @@ async def index_source(
     return IndexReport(len(loaded.names), added, removed, sources_removed, loaded.skipped)
 
 
+INDEX_LOCK_KEY = 7_302_001  # Postgres advisory lock shared by the CronJob and the index-worker
+
+
+@asynccontextmanager
+async def exclusive_index_run(pool: Pool) -> AsyncIterator[bool]:
+    """Yield True if this process now holds the one indexing slot, False if another run has it.
+
+    The CronJob and the index-worker both mirror the whole container, and a run that listed the
+    documents earlier must not prune what a later run just added. A session-level advisory lock
+    held on one connection makes them take turns; it is released on exit or if the pod dies.
+    """
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute("SELECT pg_try_advisory_lock(%s) AS got", (INDEX_LOCK_KEY,))
+        ).fetchone()
+        got = bool(row and row["got"])
+        try:
+            yield got
+        finally:
+            if got:
+                await conn.execute("SELECT pg_advisory_unlock(%s)", (INDEX_LOCK_KEY,))
+
+
 async def _main(path: str | None) -> int:
     from support_assistant.blobstore import AzureBlobStore
 
@@ -195,7 +220,11 @@ async def _main(path: str | None) -> int:
     pool = make_pool(s)
     await pool.open()
     try:
-        report = await index_source(pool, LcEmbeddings(embedder), source, s.embedding_model)
+        async with exclusive_index_run(pool) as got:
+            if not got:
+                print("another indexing run is active; nothing to do")
+                return 0
+            report = await index_source(pool, LcEmbeddings(embedder), source, s.embedding_model)
         print(
             f"{report.documents} documents: +{report.chunks_added} chunks, "
             f"-{report.chunks_removed} stale, -{report.sources_removed} from deleted documents"

@@ -14,8 +14,13 @@ from fastapi import FastAPI, HTTPException
 
 from support_assistant.agents import roles
 from support_assistant.agents.harness import Harness
-from support_assistant.agents.intent import KeywordIntentClassifier, LlmIntentClassifier
-from support_assistant.agents.llm import build_llm
+from support_assistant.agents.intent import (
+    KeywordIntentClassifier,
+    KeywordRouteClassifier,
+    LlmIntentClassifier,
+    LlmRouteClassifier,
+)
+from support_assistant.agents.llm import build_llm, build_support_llms
 from support_assistant.agents.mcp_client import McpRegistry, ToolRegistry
 from support_assistant.config import get_settings
 from support_assistant.contracts import AgentRequest, AgentResponse
@@ -59,12 +64,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.tool_redis = tool_redis
     app.state.mcp = mcp
     app.state.registry = registry
-    app.state.llm = build_llm(settings, f"chat-{AGENT}")
+    app.state.llm = build_llm(settings, f"chat-{AGENT}", use_reasoning=AGENT != "director")
     # Validated model classification when a model is configured; keywords otherwise (E4-3).
     app.state.classifier = (
         LlmIntentClassifier(app.state.llm)
         if settings.azure_openai_endpoint
         else KeywordIntentClassifier()
+    )
+    # The support_agent (the director service) hosts four modes, each with its own model.
+    app.state.llms = build_support_llms(settings, f"chat-{AGENT}")
+    app.state.route_classifier = (
+        LlmRouteClassifier(app.state.llms["route"])
+        if settings.azure_openai_endpoint
+        else KeywordRouteClassifier()
     )
     app.state.pool = None
     if AGENT == "troubleshooter":
@@ -121,10 +133,17 @@ async def run(req: AgentRequest) -> AgentResponse:
     harness = Harness(AGENT, ALLOWED[AGENT], app.state.registry)  # fresh audit trail per request
     try:
         if AGENT == "director":
-            return await roles.director(
+            mode = req.context.get("mode", "billing")  # no mode = the pre-split behaviour
+            if mode == "route":
+                return await roles.support_route(req, harness, app.state.route_classifier)
+            if mode == "normal":
+                return await roles.normal_resp_gen(req, harness, app.state.llms["normal"])
+            if mode == "instruct":
+                return await roles.instruct_gen(req, harness, app.state.llms["instruct"])
+            return await roles.billing_gen(
                 req,
                 harness,
-                app.state.llm,
+                app.state.llms["billing"],
                 app.state.classifier,
                 tool_calling=app.state.settings.director_tool_calling,
             )

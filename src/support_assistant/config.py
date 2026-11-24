@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-10-21"
     # Shared small tier for easy turns (D19). Empty disables tiering: the agent's own model is used.
     azure_openai_small_deployment: str = "chat-small"
+    # Optional reasoning tier for the hardest turns (disputes, refunds, cancellations). Unset means
+    # off: those turns stay on the agent's large chat model. Set it only after a reasoning
+    # deployment exists and has quota (it is slower, so it is never the default).
+    azure_openai_reasoning_deployment: str | None = None
+    # Which deployment answers each task. Every task has its own setting so one can be changed
+    # without touching the others. Defaults use the deployments Terraform already creates.
+    #   query rewrite -> short, fast, temperature 0: the small model, with a hard timeout.
+    azure_openai_rewrite_deployment: str = "chat-small"
+    rewrite_timeout_seconds: float = Field(1.5, gt=0)
     azure_openai_chat_deployment: str | None = None
     azure_openai_embedding_deployment: str | None = None
     # Local development only; production authenticates with Managed Identity.
@@ -71,6 +80,8 @@ class Settings(BaseSettings):
     mcp_database_url: str = "http://mcp-servers:8001/mcp"
     mcp_comms_url: str = "http://mcp-servers:8002/mcp"
     mcp_device_url: str = "http://mcp-servers:8003/mcp"
+    mcp_account_url: str = "http://mcp-servers:8004/mcp"
+    mcp_crm_url: str = "http://mcp-servers:8005/mcp"
 
     # --- Service-to-service (ClusterIP DNS names) ----------------------------
     orchestrator_url: str = "http://orchestrator:8000"
@@ -85,6 +96,10 @@ class Settings(BaseSettings):
     # Team documents the indexer reads (trusted reference material).
     docs_storage_account: str | None = None
     docs_container: str = "knowledge-base"
+    # index-worker: how often to look for changed documents, and how many looks in a row must see
+    # the same state before it indexes (so a multi-file upload is indexed once, after it finishes).
+    index_poll_seconds: int = Field(30, ge=1)
+    index_settle_polls: int = Field(2, ge=1)
     # Files customers upload (untrusted: validated, malware-scanned, expiring).
     uploads_storage_account: str | None = None
     uploads_container: str = "customer-uploads"

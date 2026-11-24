@@ -81,10 +81,40 @@ async def latest_contract_end(conn: Conn, customer_id: str) -> date | None:
 async def list_devices(conn: Conn, customer_id: str) -> list[Row]:
     cur = await conn.execute(
         """
-        SELECT d.id, d.model, d.line_id FROM devices d JOIN lines l ON l.id = d.line_id
+        SELECT d.id, d.model, d.line_id, d.imei FROM devices d JOIN lines l ON l.id = d.line_id
          WHERE l.customer_id = %s
         """,
         (customer_id,),
+    )
+    return await cur.fetchall()
+
+
+async def list_payment_methods(conn: Conn, customer_id: str) -> list[Row]:
+    """Kind and last four digits only. The table holds nothing more sensitive than that."""
+    cur = await conn.execute(
+        "SELECT id, kind, last4 FROM payment_methods WHERE customer_id = %s ORDER BY id",
+        (customer_id,),
+    )
+    return await cur.fetchall()
+
+
+async def list_episodes(conn: Conn, customer_id: str, limit: int) -> list[Row]:
+    """The customer's past resolved issues, newest first. No embeddings leave the database."""
+    cur = await conn.execute(
+        "SELECT summary, outcome, created_at FROM customer_episodes"
+        " WHERE customer_id = %s ORDER BY created_at DESC LIMIT %s",
+        (customer_id, limit),
+    )
+    return await cur.fetchall()
+
+
+async def recent_sessions(conn: Conn, customer_id: str, days: int, limit: int) -> list[Row]:
+    """The customer's conversations touched in the last `days` days, across sessions, newest first."""
+    cur = await conn.execute(
+        "SELECT session_id, messages, updated_at FROM session_conversations"
+        " WHERE customer_id = %s AND updated_at > now() - make_interval(days => %s)"
+        " ORDER BY updated_at DESC LIMIT %s",
+        (customer_id, days, limit),
     )
     return await cur.fetchall()
 

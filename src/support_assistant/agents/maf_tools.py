@@ -28,6 +28,14 @@ class RecentPaymentsArgs(BaseModel):
     minutes: int = Field(10, ge=1, le=1440)
 
 
+class CaseHistoryArgs(BaseModel):
+    limit: int = Field(5, ge=1, le=10)
+
+
+class RecentInteractionsArgs(BaseModel):
+    days: int = Field(5, ge=1, le=30)
+
+
 class DiagnosticsArgs(BaseModel):
     device_id: str = Field(min_length=1)
 
@@ -42,6 +50,15 @@ TOOL_INPUTS: dict[str, tuple[type[BaseModel], str]] = {
     "get_account_summary": (NoArgs, "Lines, plans and data usage for the verified customer."),
     "get_bills": (NoArgs, "All bills of the verified customer, with status."),
     "check_suspension_lift": (NoArgs, "Whether the customer's suspension may be lifted."),
+    "get_customer_profile": (NoArgs, "Name, phone and masked email of the verified customer."),
+    "get_contract": (NoArgs, "Per line: plan, status, contract end date and whether it expired."),
+    "get_devices": (NoArgs, "The customer's devices (model, line, last four of the IMEI)."),
+    "get_payment_methods": (NoArgs, "The customer's payment methods (kind, last four digits)."),
+    "get_case_history": (CaseHistoryArgs, "The customer's past resolved support issues."),
+    "get_recent_interactions": (
+        RecentInteractionsArgs,
+        "The customer's conversations from the last N days (default 5), across sessions.",
+    ),
     "check_recent_payments": (RecentPaymentsArgs, "Payments for a bill in the last N minutes."),
     "run_diagnostics": (DiagnosticsArgs, "Run diagnostics on one of the customer's devices."),
     "toggle_airplane_mode": (ToggleArgs, "Turn airplane mode on or off on a device."),

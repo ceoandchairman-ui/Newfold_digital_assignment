@@ -80,7 +80,15 @@ class InProcessAgentClient:
 
         harness = Harness(agent, roles.ALLOWED_TOOLS[agent], self._registries[agent])
         if agent == "director":
-            return await roles.director(req, harness, self._llms[agent])
+            mode = req.context.get("mode", "billing")
+            llm = self._llms.get(f"director:{mode}", self._llms[agent])
+            if mode == "route":
+                return await roles.support_route(req, harness, self._llms.get("route_classifier"))
+            if mode == "normal":
+                return await roles.normal_resp_gen(req, harness, llm)
+            if mode == "instruct":
+                return await roles.instruct_gen(req, harness, llm)
+            return await roles.billing_gen(req, harness, llm)
         if agent == "evaluator":
             return await roles.evaluator(req, harness)
         return await roles.troubleshooter(

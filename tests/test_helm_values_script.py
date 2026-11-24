@@ -23,6 +23,7 @@ DEPLOYMENTS = [
     "agent-evaluator",
     "mcp-servers",
     "notification-worker",
+    "index-worker",
 ]
 WORKLOADS = [*DEPLOYMENTS, "indexer", "db-bootstrap"]
 

@@ -1,9 +1,10 @@
-"""Launcher: one container, three MCP servers on three ports (D12, E8-8).
+"""Launcher: one container, five MCP servers on five ports (D12, E8-8).
 
     python -m support_assistant.mcp_servers.main
 
-database (8001), comms (8002) and device_diagnostics (8003) share this process and the Postgres
-pool. Each is built by its own factory in this package; this file only wires and serves them.
+database (8001), comms (8002), device_diagnostics (8003), account_management (8004) and crm (8005)
+share this process and the Postgres pool. Each is built by its own factory in this package; this
+file only wires and serves them.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from mcp.server.fastmcp import FastMCP
 
 from support_assistant.config import Settings, get_settings
 from support_assistant.db import make_pool
+from support_assistant.mcp_servers.account import build_account_server
 from support_assistant.mcp_servers.comms import build_comms_server
+from support_assistant.mcp_servers.crm import build_crm_server
 from support_assistant.mcp_servers.database import build_database_server
 from support_assistant.mcp_servers.device import build_device_server
 from support_assistant.notifications import LogOutbox, Outbox, ServiceBusOutbox
@@ -81,6 +84,8 @@ async def main() -> None:
         build_device_server(
             RedisDeviceStore(make_redis(settings.redis_url.get_secret_value(), settings))
         ),
+        build_account_server(pool),
+        build_crm_server(pool),
     ]
     await pool.open()
     try:

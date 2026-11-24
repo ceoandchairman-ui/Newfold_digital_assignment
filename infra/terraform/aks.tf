@@ -78,6 +78,7 @@ locals {
     "mcp-servers",
     "notification-worker",
     "indexer",      # reads documents from blob storage and writes knowledge_base_chunks
+    "index-worker", # the same, but always running: indexes uploads within about a minute
     "db-bootstrap", # runs migrations and creates Postgres roles for the others (pre-deploy hook)
   ])
   openai_users = toset([

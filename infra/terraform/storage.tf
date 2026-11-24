@@ -74,6 +74,12 @@ resource "azurerm_role_assignment" "indexer_blob_reader" {
   principal_id         = azurerm_user_assigned_identity.workload["indexer"].principal_id
 }
 
+resource "azurerm_role_assignment" "index_worker_blob_reader" {
+  scope                = azurerm_storage_container.knowledge_base.id
+  role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_user_assigned_identity.workload["index-worker"].principal_id
+}
+
 # Document owners upload with this group. Set docs_writers_object_id to an Entra group; leave empty
 # to manage access by hand.
 resource "azurerm_role_assignment" "docs_writers" {

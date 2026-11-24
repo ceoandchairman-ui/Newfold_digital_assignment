@@ -1,11 +1,21 @@
 """Thin LangGraph router (Fat Backend / Skinny Graph). Agents are called through AgentClient.
 
-Flow:  auth_gate (deterministic, no LLM) -> unverified: stop with a verification prompt
-       verified -> director | retrieve -> troubleshooter
-       retrieve: a LangChain retriever called from a node, outside the agent harness (D8)
-       director -> (proposed payment?) evaluate -> approve (interrupt) -> pay -> respond
-       evaluator reject -> explain and stop; evaluator outage or repeated rejects -> escalate (E3-7)
-Pauses use interrupt(); state is checkpointed by the official Postgres saver (D9).
+The edge contract of backlog E4-10 / scope doc section 3:
+
+    auth_gate -> unverified: deny -> egress
+              -> verified:   support_agent   (routes: NORMAL | INSTRUCT | BILLING | TROUBLESHOOT)
+        NORMAL       -> normal_resp_gen  (simple questions, small model)               -> egress
+        INSTRUCT     -> retrieve -> instruct_gen (reasoning model, policy + facts)     -> egress
+        BILLING      -> billing_gen (task-executing model, tools; PROPOSES a payment)
+                          -> proposal?  eval_agent -> approve (interrupt) -> mcp_client_routing_node
+        TROUBLESHOOT -> retrieve -> troubleshoot_agent -> eval_agent -> egress
+
+`retrieve` is the independent, non-MCP retriever (a LangChain retriever called from a node, D8): the
+support_agent's instruct_gen and the troubleshooter read its chunks, MCP is only for tools.
+`mcp_client_routing_node` is the graph's MCP hub: it executes the approved payment (the only write).
+eval_agent: payment verdicts are plain code; a troubleshooting reply gets an invariant check first.
+Evaluator reject -> explain and stop; outage or repeated rejects -> escalate (E3-7).
+Pauses use interrupt(); state is checkpointed by the Redis saver (D9).
 """
 
 from __future__ import annotations
@@ -70,7 +80,7 @@ def _traced(name: str, fn: Any) -> Any:
             if out.get("escalated"):
                 span.set_attribute("support.escalated", True)
                 span.set_attribute("support.escalation_reason", str(out.get("escalation_reason")))
-            if name == "pay":
+            if name == "mcp_client_routing_node":
                 span.set_attribute("support.payment", True)  # tail sampling keeps all of these
             return out
 
@@ -83,7 +93,9 @@ class SessionState(TypedDict, total=False):
     customer_id: str
     session_id: str
     identity_verified: bool
-    route: Literal["billing", "troubleshoot"]
+    route: str  # legacy lowercase hint ("billing" | "troubleshoot"); only a fallback
+    route_hint: str | None  # the fat backend's cheap keyword guess; only a fallback
+    intent: Literal["NORMAL", "INSTRUCT", "BILLING", "TROUBLESHOOT"]  # decided by support_agent
     messages: list[dict[str, Any]]  # plain dicts; the backend owns history (memory.py)
     search_query: str | None  # rewritten retrieval query from the backend (chains.py)
     kb_chunks: list[dict[str, str]]  # trimmed retrieval hits (payload hygiene, E7-3)
@@ -144,6 +156,43 @@ def build_graph(
     async def deny(state: SessionState) -> dict[str, Any]:
         return {"reply": AuthenticationError("unverified").customer_message}
 
+    def _fallback_intent(state: SessionState) -> str:
+        """Used only when support_agent gives no route (outage, or an agent that predates routing)."""
+        hint = str(state.get("route_hint") or "").upper()
+        if hint in ("NORMAL", "INSTRUCT", "BILLING", "TROUBLESHOOT"):
+            return hint
+        legacy = {"billing": "BILLING", "troubleshoot": "TROUBLESHOOT"}
+        return legacy.get(str(state.get("route") or ""), "NORMAL")  # E4-3: unsure -> normal
+
+    async def support_agent(state: SessionState) -> dict[str, Any]:
+        """The Director (E4-3): one validated routing decision. No wording, no tools."""
+        try:
+            res = await client.run("director", _req(state, mode="route"))
+            intent = res.route or _fallback_intent(state)
+        except ExternalServiceUnavailable:
+            intent = _fallback_intent(state)  # routing must never take the turn down
+        return {"intent": intent}
+
+    async def normal_resp_gen(state: SessionState) -> dict[str, Any]:
+        try:
+            res = await client.run("director", _req(state, mode="normal"))
+        except ExternalServiceUnavailable as exc:
+            return {"reply": to_customer_message(exc)}
+        return {"reply": res.reply, "audit": res.audit}
+
+    async def instruct_gen(state: SessionState) -> dict[str, Any]:
+        try:
+            res = await client.run("director", _req(state, mode="instruct"))
+        except ExternalServiceUnavailable as exc:
+            return {"reply": to_customer_message(exc)}
+        if res.escalate:
+            return {
+                "reply": res.reply,
+                "escalated": True,
+                "escalation_reason": res.escalation_reason,
+            }
+        return {"reply": res.reply, "audit": res.audit}
+
     async def retrieve(state: SessionState) -> dict[str, Any]:
         """Retriever call from a node (D8). A retrieval failure degrades to the agent's own search."""
         if retriever is None or not needs_retrieval(_query(state)):
@@ -166,9 +215,10 @@ def build_graph(
     def _escalate(reason: EscalationReason) -> dict[str, Any]:
         return {"reply": ESCALATION_MESSAGE, "escalated": True, "escalation_reason": reason.value}
 
-    async def director(state: SessionState) -> dict[str, Any]:
+    async def billing_gen(state: SessionState) -> dict[str, Any]:
+        """The task-executing sub-agent (E4-4): account and bill answers, and payment PROPOSALS."""
         try:
-            res = await client.run("director", _req(state))
+            res = await client.run("director", _req(state, mode="billing"))
         except ExternalServiceUnavailable as exc:
             return {"reply": to_customer_message(exc), "proposed_action": None}
         try:
@@ -177,7 +227,7 @@ def build_graph(
             return {"proposed_action": None, **_escalate(EscalationReason.INVARIANT_VIOLATION)}
         return {"reply": res.reply, "proposed_action": res.proposed_action, "audit": res.audit}
 
-    async def troubleshooter(state: SessionState) -> dict[str, Any]:
+    async def troubleshoot_agent(state: SessionState) -> dict[str, Any]:
         turns = state.get("troubleshoot_turns", 0) + 1
         if troubleshoot_loop_exceeded(turns, max_troubleshoot_turns + 1):
             return _escalate(EscalationReason.TROUBLESHOOT_LOOP)
@@ -193,7 +243,11 @@ def build_graph(
             }
         return {"reply": res.reply, "troubleshoot_turns": turns, "audit": res.audit}
 
-    async def evaluate(state: SessionState) -> dict[str, Any]:
+    async def eval_agent(state: SessionState) -> dict[str, Any]:
+        """The checkpoint (E4-6). A payment proposal gets the deterministic payment verdict; a
+        troubleshooting reply gets an invariant check (for example, it must cite the manual)."""
+        if not state.get("proposed_action"):
+            return await _check_reply(state)
         attempts = state.get("eval_attempts", 0) + 1
         try:
             res = await client.run(
@@ -220,6 +274,20 @@ def build_graph(
             "audit": res.audit,
         }
 
+    async def _check_reply(state: SessionState) -> dict[str, Any]:
+        if state.get("escalated") or not state.get("reply"):
+            return {}  # an escalation text is fixed; nothing to check
+        try:
+            res = await client.run(
+                "evaluator",
+                _req(state, mode="reply_check", reply=state["reply"], intent=state.get("intent")),
+            )
+        except ExternalServiceUnavailable:
+            return {}  # fail open here only: the egress filter still runs on this reply
+        if res.verdict == "reject":
+            return _escalate(EscalationReason.INVARIANT_VIOLATION)
+        return {"audit": res.audit}
+
     async def approve(state: SessionState) -> dict[str, Any]:
         action = state["proposed_action"] or {}
         decision = interrupt(
@@ -232,7 +300,8 @@ def build_graph(
             return {}
         return {"proposed_action": None, "reply": "Okay, I have not made any payment."}
 
-    async def pay_node(state: SessionState) -> dict[str, Any]:
+    async def mcp_client_routing_node(state: SessionState) -> dict[str, Any]:
+        """The graph's MCP hub. It executes the one approved write (process_payment)."""
         action = state.get("proposed_action")
         if not action:
             return {}
@@ -256,47 +325,85 @@ def build_graph(
             "audit": entry,
         }
 
-    def route(state: SessionState) -> str:
-        if not state.get("identity_verified"):
-            return "deny"
-        return "retrieve" if state.get("route") == "troubleshoot" else "billing"
+    def after_auth(state: SessionState) -> str:
+        return "support_agent" if state.get("identity_verified") else "deny"
 
-    def after_director(state: SessionState) -> str:
-        return "evaluate" if state.get("proposed_action") else "egress"
+    def after_support_agent(state: SessionState) -> str:
+        """Dynamic routing on the customer's intent (E4-3, E4-10)."""
+        return {
+            "NORMAL": "normal_resp_gen",
+            "BILLING": "billing_gen",
+            "INSTRUCT": "retrieve",
+            "TROUBLESHOOT": "retrieve",
+        }.get(str(state.get("intent")), "normal_resp_gen")
 
-    def after_evaluate(state: SessionState) -> str:
+    def after_retrieve(state: SessionState) -> str:
+        return "troubleshoot_agent" if state.get("intent") == "TROUBLESHOOT" else "instruct_gen"
+
+    def after_billing_gen(state: SessionState) -> str:
+        return "eval_agent" if state.get("proposed_action") else "egress"
+
+    def after_troubleshoot(state: SessionState) -> str:
+        return "egress" if state.get("escalated") else "eval_agent"
+
+    def after_eval(state: SessionState) -> str:
         if state.get("escalated"):
             return "egress"
         return "approve" if state.get("proposed_action") else "egress"
 
     def after_approve(state: SessionState) -> str:
-        return "pay" if state.get("proposed_action") else "egress"
+        return "mcp_client_routing_node" if state.get("proposed_action") else "egress"
 
     g = StateGraph(SessionState)
-    g.add_node("director", _traced("director", director))
-    g.add_node("troubleshooter", _traced("troubleshooter", troubleshooter))
-    g.add_node("evaluate", _traced("evaluate", evaluate))
-    g.add_node("approve", _traced("approve", approve))
-    g.add_node("pay", _traced("pay", pay_node))
-    g.add_node("auth_gate", _traced("auth_gate", auth_gate))
-    g.add_node("deny", _traced("deny", deny))
-    g.add_node("retrieve", _traced("retrieve", retrieve))
+    for name, fn in (
+        ("auth_gate", auth_gate),
+        ("deny", deny),
+        ("support_agent", support_agent),
+        ("normal_resp_gen", normal_resp_gen),
+        ("instruct_gen", instruct_gen),
+        ("billing_gen", billing_gen),
+        ("retrieve", retrieve),
+        ("troubleshoot_agent", troubleshoot_agent),
+        ("eval_agent", eval_agent),
+        ("approve", approve),
+        ("mcp_client_routing_node", mcp_client_routing_node),
+        ("egress", egress),
+    ):
+        g.add_node(name, _traced(name, fn))
     g.add_edge(START, "auth_gate")
     g.add_conditional_edges(
-        "auth_gate",
-        route,
-        {"deny": "deny", "billing": "director", "retrieve": "retrieve"},
+        "auth_gate", after_auth, {"deny": "deny", "support_agent": "support_agent"}
     )
-    g.add_edge("retrieve", "troubleshooter")
-    g.add_node("egress", _traced("egress", egress))
-    g.add_edge("deny", "egress")
     g.add_conditional_edges(
-        "director", after_director, {"evaluate": "evaluate", "egress": "egress"}
+        "support_agent",
+        after_support_agent,
+        {
+            "normal_resp_gen": "normal_resp_gen",
+            "billing_gen": "billing_gen",
+            "retrieve": "retrieve",
+        },
     )
-    g.add_conditional_edges("evaluate", after_evaluate, {"approve": "approve", "egress": "egress"})
-    g.add_conditional_edges("approve", after_approve, {"pay": "pay", "egress": "egress"})
-    g.add_edge("troubleshooter", "egress")
-    g.add_edge("pay", "egress")
+    g.add_conditional_edges(
+        "retrieve",
+        after_retrieve,
+        {"troubleshoot_agent": "troubleshoot_agent", "instruct_gen": "instruct_gen"},
+    )
+    g.add_conditional_edges(
+        "billing_gen", after_billing_gen, {"eval_agent": "eval_agent", "egress": "egress"}
+    )
+    g.add_conditional_edges(
+        "troubleshoot_agent", after_troubleshoot, {"eval_agent": "eval_agent", "egress": "egress"}
+    )
+    g.add_conditional_edges("eval_agent", after_eval, {"approve": "approve", "egress": "egress"})
+    g.add_conditional_edges(
+        "approve",
+        after_approve,
+        {"mcp_client_routing_node": "mcp_client_routing_node", "egress": "egress"},
+    )
+    g.add_edge("normal_resp_gen", "egress")
+    g.add_edge("instruct_gen", "egress")
+    g.add_edge("mcp_client_routing_node", "egress")
+    g.add_edge("deny", "egress")
     g.add_edge("egress", END)
     return g.compile(checkpointer=checkpointer)
 

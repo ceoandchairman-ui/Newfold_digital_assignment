@@ -27,19 +27,26 @@ _PROMPT = ChatPromptTemplate.from_messages(
 
 
 def build_rewrite_chain(
-    settings: Settings, deployment: str = "chat-director"
+    settings: Settings, deployment: str | None = None
 ) -> Runnable[dict[str, Any], str]:
+    """Query rewrite runs on the small model (a 64-token job) with a hard timeout and no retries.
+
+    It sits in series before the graph starts, so a slow answer is worse than none: past the
+    timeout the caller falls back to the customer's own words.
+    """
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
     llm = AzureChatOpenAI(
         azure_endpoint=settings.azure_openai_endpoint,
-        azure_deployment=deployment,
+        azure_deployment=deployment or settings.azure_openai_rewrite_deployment,
         api_version="2024-10-21",
         azure_ad_token_provider=get_bearer_token_provider(
             DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
         ),
         temperature=0,
         max_tokens=64,
+        timeout=settings.rewrite_timeout_seconds,
+        max_retries=0,
     )
     return _PROMPT | llm | StrOutputParser()
 

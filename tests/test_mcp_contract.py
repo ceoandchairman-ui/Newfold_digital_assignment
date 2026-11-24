@@ -8,9 +8,11 @@ from contextlib import asynccontextmanager
 import pytest
 
 from support_assistant.errors import NotFoundError
-from support_assistant.mcp_catalog import ALL_SERVERS, COMMS, DATABASE, DEVICE
+from support_assistant.mcp_catalog import ACCOUNT, ALL_SERVERS, COMMS, CRM, DATABASE, DEVICE
+from support_assistant.mcp_servers.account import build_account_server
 from support_assistant.mcp_servers.common import plain, safe
 from support_assistant.mcp_servers.comms import build_comms_server
+from support_assistant.mcp_servers.crm import build_crm_server
 from support_assistant.mcp_servers.database import build_database_server
 from support_assistant.mcp_servers.device import build_device_server
 from support_assistant.notifications import LogOutbox
@@ -30,6 +32,8 @@ def servers():
         DATABASE.name: build_database_server(FakePool(), StubGateway()),
         COMMS.name: build_comms_server(LogOutbox()),
         DEVICE.name: build_device_server(),
+        ACCOUNT.name: build_account_server(FakePool()),
+        CRM.name: build_crm_server(FakePool()),
     }
 
 

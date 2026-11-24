@@ -18,7 +18,7 @@ from support_assistant.budget import TokenBudget, estimate_tokens
 from support_assistant.contracts import AgentRequest
 from support_assistant.domain.intent import CLOSING_REPLY, needs_retrieval
 from support_assistant.errors import ExternalServiceUnavailable
-from support_assistant.mcp_catalog import COMMS, DATABASE, DEVICE, WRITE_TOOLS
+from support_assistant.mcp_catalog import ACCOUNT, COMMS, CRM, DATABASE, DEVICE, WRITE_TOOLS
 from support_assistant.services.retrieval import Chunk
 
 
@@ -81,7 +81,13 @@ def test_payment_and_notification_are_the_write_tools():
 
 
 # --- registry: write flag and circuit breaker ----------------------------------------------------------
-URLS = {DATABASE.name: "db", COMMS.name: "comms", DEVICE.name: "dev"}
+URLS = {
+    DATABASE.name: "db",
+    COMMS.name: "comms",
+    DEVICE.name: "dev",
+    ACCOUNT.name: "account",
+    CRM.name: "crm",
+}
 
 
 class RecConn:

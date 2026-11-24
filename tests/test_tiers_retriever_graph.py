@@ -50,6 +50,43 @@ async def test_router_uses_large_for_hard_and_falls_back_when_small_fails():
     assert llm2.last_tier is Tier.LARGE
 
 
+# --- optional reasoning tier --------------------------------------------------------------
+def test_reasoning_tier_is_never_picked_unless_a_reasoning_model_is_configured():
+    assert pick_tier("customer disputes bill B1", "refund me") is Tier.LARGE
+    assert (
+        pick_tier("customer disputes bill B1", "refund me", reasoning_available=True)
+        is Tier.REASONING
+    )
+    # ordinary hard turns (overdue, long) stay on the large model even when reasoning exists
+    assert pick_tier("bill B1 overdue", "hi", reasoning_available=True) is Tier.LARGE
+    assert pick_tier("No unpaid bills.", "plan?", reasoning_available=True) is Tier.SMALL
+
+
+async def test_reasoning_model_answers_disputes_and_large_covers_for_it_when_it_fails():
+    small, large, reasoning = Recorder("small"), Recorder("large"), Recorder("reasoning")
+    llm = TieredLLM(small, large, reasoning)
+    assert await llm.respond("i", "bill B1", "I want to dispute this charge") == "reasoning"
+    assert (small.calls, large.calls) == (0, 0)
+
+    llm2 = TieredLLM(small, large, Recorder("reasoning", fail=True))
+    assert await llm2.respond("i", "bill B1", "refund please") == "large"
+    assert llm2.last_tier is Tier.LARGE
+
+
+async def test_without_a_reasoning_model_disputes_use_large_as_before():
+    small, large = Recorder("small"), Recorder("large")
+    assert await TieredLLM(small, large).respond("i", "bill B1", "dispute this") == "large"
+
+
+def test_query_rewrite_runs_on_the_small_model_with_a_short_timeout_by_default():
+    from support_assistant.config import Settings
+
+    fields = Settings.model_fields
+    assert fields["azure_openai_rewrite_deployment"].default == "chat-small"
+    assert fields["rewrite_timeout_seconds"].default <= 2
+    assert fields["azure_openai_reasoning_deployment"].default is None
+
+
 # --- graph: auth_gate and retrieve node -----------------------------------------------------
 class FakeRetriever(BaseRetriever):
     hits: list[Document] = []
@@ -130,8 +167,7 @@ async def test_retrieve_node_feeds_chunks_to_the_troubleshooter():
     graph = build_graph(client, _no_pay, MemorySaver(), retriever=retr)
     await graph.ainvoke(_state(), {"configurable": {"thread_id": "B"}})
     assert retr.seen == ["mobile no signal"]  # the rewritten query, not the raw message
-    agent, req = client.requests[0]
-    assert agent == "troubleshooter"
+    (req,) = [r for a, r in client.requests if a == "troubleshooter"]
     assert req.context["kb_chunks"][0]["content"] == "Toggle airplane mode."
 
 
@@ -139,6 +175,6 @@ async def test_retriever_failure_degrades_instead_of_blocking():
     client, retr = CapturingClient(), FakeRetriever(fail=True, seen=[])
     graph = build_graph(client, _no_pay, MemorySaver(), retriever=retr)
     out = await graph.ainvoke(_state(), {"configurable": {"thread_id": "C"}})
-    agent, req = client.requests[0]
-    assert agent == "troubleshooter" and "kb_chunks" not in req.context  # agent searches itself
+    (req,) = [r for a, r in client.requests if a == "troubleshooter"]
+    assert "kb_chunks" not in req.context  # the agent searches for itself
     assert out["reply"] == "ok"

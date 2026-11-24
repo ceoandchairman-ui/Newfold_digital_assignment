@@ -39,6 +39,10 @@ openai_deployments = {
   "chat-troubleshooter" = { model_name = "gpt-4.1", model_version = "2025-04-14", capacity_k = 25 }
   "chat-small"          = { model_name = "gpt-4.1-mini", model_version = "2025-04-14", capacity_k = 50 }
   "chat-evaluator"      = { model_name = "gpt-4.1-mini", model_version = "2025-04-14", capacity_k = 30 }
+  # Optional reasoning tier for disputes, refunds and cancellations. Add it only after a quota
+  # request is approved for a reasoning model in the chosen region (D15), then set
+  # AZURE_OPENAI_REASONING_DEPLOYMENT=chat-reasoning on the agents. Left out on purpose now.
+  # "chat-reasoning"    = { model_name = "<reasoning model>", model_version = "<version>", capacity_k = 10 }
 }
 
 # From infra/bootstrap outputs.

@@ -22,7 +22,7 @@ from support_assistant import telemetry
 from support_assistant.agents.mcp_client import McpRegistry
 from support_assistant.contracts import AgentRequest, AgentResponse
 from support_assistant.errors import ExternalServiceUnavailable
-from support_assistant.mcp_catalog import COMMS, DATABASE, DEVICE
+from support_assistant.mcp_catalog import ACCOUNT, COMMS, CRM, DATABASE, DEVICE
 from support_assistant.observability import REQUEST_ID_HEADER, RequestContextMiddleware
 from support_assistant.orchestrator.graph import build_graph
 
@@ -123,7 +123,13 @@ class Conn:
         pass
 
 
-URLS = {DATABASE.name: "db", COMMS.name: "comms", DEVICE.name: "dev"}
+URLS = {
+    DATABASE.name: "db",
+    COMMS.name: "comms",
+    DEVICE.name: "dev",
+    ACCOUNT.name: "account",
+    CRM.name: "crm",
+}
 
 
 async def test_mcp_calls_are_client_spans_with_rpc_attributes():
@@ -183,9 +189,12 @@ async def test_every_node_is_a_span_and_an_approval_pause_is_not_an_error():
     approve = [s for s in _spans("graph.node approve")]
     assert approve and approve[-1].attributes["support.awaiting_approval"] is True
     assert approve[-1].status.status_code is not StatusCode.ERROR
-    assert {"graph.node auth_gate", "graph.node director", "graph.node evaluate"} <= {
-        s.name for s in _spans("graph.node")
-    }
+    assert {
+        "graph.node auth_gate",
+        "graph.node support_agent",
+        "graph.node billing_gen",
+        "graph.node eval_agent",
+    } <= {s.name for s in _spans("graph.node")}
 
 
 async def test_the_payment_node_is_tagged_so_the_collector_keeps_every_payment_trace():
@@ -194,5 +203,5 @@ async def test_the_payment_node_is_tagged_so_the_collector_keeps_every_payment_t
     await graph.ainvoke(_state(), cfg)
     EXPORTER.clear()
     await graph.ainvoke(Command(resume={"approved": True}, update={"audit": None}), cfg)
-    (pay,) = _spans("graph.node pay")
+    (pay,) = _spans("graph.node mcp_client_routing_node")
     assert pay.attributes["support.payment"] is True
