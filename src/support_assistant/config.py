@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # D3: BGE-M3 via a managed OpenAI-compatible API. 1024 dims fits pgvector HNSW (limit 2000).
     embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
+    # Raise this to force every document to be embedded again with the same model name.
+    embedding_version: str = "1"
+    # The metadata registry (registry.py), Azure Cosmos DB with Entra auth only. Unset = no
+    # registry: nothing is checked or recorded. Production sets REGISTRY_REQUIRED so that a
+    # missing endpoint stops a service instead of silently skipping the checks.
+    cosmos_endpoint: str | None = None
+    cosmos_database: str = "registry"
+    registry_required: bool = False
     embedder_url: str = ""
     # D18: open reranker on the same host, applied to the top candidates only.
     rerank_enabled: bool = False

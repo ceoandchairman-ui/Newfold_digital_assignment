@@ -45,6 +45,7 @@ spec:
                 - { name: {{ $k }}, value: {{ $v | quote }} }
                 {{- end }}
                 - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-indexer" }
+                - { name: EMBEDDING_DIM, value: {{ .Values.embeddingDim | quote }} }
               resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
               securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
               volumeMounts:

@@ -44,6 +44,7 @@ def outputs(**overrides):
         "openai_endpoint": {"value": "https://oai-x.openai.azure.com/"},
         "content_safety_endpoint": {"value": "https://cs-x.cognitiveservices.azure.com/"},
         "servicebus_namespace": {"value": "sb-support-dev-abc12"},
+        "cosmos_endpoint": {"value": "https://cosmos-x.documents.azure.com:443/"},
     }
     out.update(overrides)
     return out
@@ -85,6 +86,7 @@ def test_every_address_a_service_needs_is_generated_not_typed():
         "DOCS_CONTAINER": "knowledge-base",
         "UPLOADS_STORAGE_ACCOUNT": "stsupportupldev",
         "UPLOADS_CONTAINER": "customer-uploads",
+        "COSMOS_ENDPOINT": "https://cosmos-x.documents.azure.com:443/",
     }
 
 
@@ -107,6 +109,7 @@ def test_the_endpoint_names_match_the_settings_the_services_actually_read():
         "uploads_storage_account",
         "openai_endpoint",
         "servicebus_namespace",
+        "cosmos_endpoint",
     ],
 )
 def test_a_missing_terraform_output_stops_the_deploy(missing):

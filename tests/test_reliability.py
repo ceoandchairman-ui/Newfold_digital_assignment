@@ -36,6 +36,7 @@ from support_assistant.orchestrator.graph import build_graph
 from support_assistant.retrieval_client import HttpRetrievalClient
 from support_assistant.services.gateway_sim import SimulatedGateway
 from support_assistant.telemetry import RedactSessionInUrls
+from test_indexer_chain import FakePool as KbPool
 from test_security import STRONG, _setup
 
 
@@ -325,50 +326,22 @@ async def test_the_worker_survives_a_crashing_message_and_asks_for_a_pause():
 
 # --- re-embedding ---------------------------------------------------------------------------------
 async def test_a_new_embedding_model_embeds_every_chunk_again(monkeypatch):
-    rows: dict[str, str] = {}  # content_hash -> embedding model
-
-    class Cursor:
-        rowcount = 0
-
-        def __init__(self, found=()):
-            self.found = list(found)
-
-        async def fetchall(self):
-            return self.found
-
-    class Conn:
-        async def execute(self, sql, params=None):
-            text = " ".join(sql.split())
-            if text.startswith("SELECT content_hash"):
-                assert "embedding_model = %s AND embedding_version = %s" in text
-                return Cursor({"content_hash": h} for h, m in rows.items() if m == params[0])
-            if text.startswith("INSERT"):
-                assert "ON CONFLICT (content_hash) DO UPDATE" in text
-                rows[params[4]] = params[6]
-            return Cursor()
-
-        @asynccontextmanager
-        async def transaction(self):
-            yield
-
-    class Pool:
-        @asynccontextmanager
-        async def connection(self):
-            yield Conn()
+    pool = KbPool()
 
     async def register(_):
         return None
 
     monkeypatch.setattr(indexer, "register_vector_async", register)
 
-    async def index(model: str) -> int:
-        chain = indexer.build_index_chain(Pool(), LcEmbeddings(FakeEmbedder(dim=8)), model)
-        out = await chain.ainvoke({"source": "kb.md", "text": "# G\n\nRestart.\n"})
-        return int(out["added"])
+    async def index(model: str) -> dict:
+        chain = indexer.build_index_chain(pool, LcEmbeddings(FakeEmbedder(dim=8)), model)
+        return await chain.ainvoke({"source": "kb.md", "text": "# G\n\nRestart.\n"})
 
     first = await index("model-a")
-    assert first >= 1 and await index("model-a") == 0  # unchanged: skipped
-    assert await index("model-b") == first and set(rows.values()) == {"model-b"}
+    assert first["embedded"] >= 1 and (await index("model-a"))["embedded"] == 0  # unchanged
+    again = await index("model-b")  # vectors of another model are never reused
+    assert again["embedded"] == first["embedded"]
+    assert {r["model"] for r in pool.store["rows"].values()} == {"model-b"}
 
 
 # --- correlation and leaks ------------------------------------------------------------------------

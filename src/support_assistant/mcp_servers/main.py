@@ -36,6 +36,9 @@ from support_assistant.mcp_servers.stripe_server import build_stripe_server
 from support_assistant.mcp_servers.twilio_sms import build_twilio_server
 from support_assistant.notifications import LogOutbox, Outbox, ServiceBusOutbox
 from support_assistant.redis_factory import make_redis
+from support_assistant.registry import build_registry
+from support_assistant.releases import ReleaseGate, tools_release
+from support_assistant.resilience import backoff_delay
 from support_assistant.services.device_sim import RedisDeviceStore
 from support_assistant.telemetry import instrument_asgi, setup_telemetry
 
@@ -77,6 +80,21 @@ async def supervise(
         await sleep(min(2 ** min(restarts, 10), max_backoff_s))
 
 
+async def require_release(
+    gate: ReleaseGate,
+    attempts: int = 6,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Do not serve tools until this image's tool release is verified. Gives up after a few
+    tries, so the pod restarts and the failed rollout is visible."""
+    for attempt in range(1, attempts + 1):
+        if await gate.check():
+            return
+        if attempt < attempts:
+            await sleep(backoff_delay(attempt, 2.0, 20.0) + 1.0)
+    raise RuntimeError("the tool release of this image is not verified in the registry")
+
+
 async def _serve(server: FastMCP, port: int) -> None:
     app = instrument_asgi(server.streamable_http_app())  # joins the calling agent's trace
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
@@ -86,6 +104,12 @@ async def _serve(server: FastMCP, port: int) -> None:
 async def main() -> None:
     settings = get_settings()
     setup_telemetry("mcp-servers")
+    registry = build_registry(settings)
+    try:
+        await require_release(ReleaseGate(registry, tools_release()))
+    finally:
+        if registry is not None:
+            await registry.aclose()
     pool = make_pool(settings)
     gateway = build_gateway(settings)  # Stripe when switched on and configured, else the stub
     servers = [

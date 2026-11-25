@@ -1,3 +1,6 @@
+# The hook also publishes the shared-settings releases to the metadata registry (releases.py),
+# so they exist before any new pod checks for them.
+#
 # Pre-deploy hook: migrations, then a Postgres role per workload identity with least-privilege
 # grants (E10-6). Runs as the `db-bootstrap` identity, which is a Postgres Entra administrator, so
 # no service ever needs DDL rights. If it fails, the release fails (and --atomic rolls it back);
@@ -41,11 +44,14 @@ spec:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           # Dev only (seed.enabled): also load the demo data. The loader is idempotent.
-          command: ["sh", "-c", "alembic upgrade head && python -m support_assistant.dbroles{{ if .Values.seed.enabled }} && python -m support_assistant.seed seed/example_seed.toml{{ end }}"]
+          command: ["sh", "-c", "alembic upgrade head && python -m support_assistant.dbroles && python -m support_assistant.releases publish{{ if .Values.seed.enabled }} && python -m support_assistant.seed seed/example_seed.toml{{ end }}"]
           envFrom:
             - secretRef: { name: support-env }
           env:
             {{- range $k, $v := .Values.commonEnv }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+            {{- range $k, $v := .Values.endpoints }}
             - { name: {{ $k }}, value: {{ $v | quote }} }
             {{- end }}
             - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-db-bootstrap" }

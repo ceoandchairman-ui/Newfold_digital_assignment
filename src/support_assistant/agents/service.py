@@ -32,6 +32,8 @@ from support_assistant.mcp_catalog import server_urls
 from support_assistant.models import Role
 from support_assistant.observability import RequestContextMiddleware
 from support_assistant.redis_factory import make_redis
+from support_assistant.registry import build_registry
+from support_assistant.releases import ReleaseGate, tools_release
 from support_assistant.retrieval_client import HttpRetrievalClient
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
 from support_assistant.tool_cache import CachingRegistry, ToolResultCache
@@ -91,7 +93,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Search and reranking live in the retrieval service; no agent reads the search tables itself.
     retrieval = HttpRetrievalClient(settings.retrieval_url, settings.retrieval_timeout_seconds)
     app.state.retrieval = retrieval
+    metadata = build_registry(settings)
+    app.state.release_gate = ReleaseGate(metadata, tools_release())
     yield
+    if metadata is not None:
+        await metadata.aclose()
     await mcp.aclose()
     await retrieval.aclose()
     if app.state.tool_redis is not None:
@@ -114,6 +120,9 @@ async def readyz() -> dict[str, object]:
     missing = await app.state.mcp.verify(ALLOWED[AGENT])
     if missing:
         raise HTTPException(503, detail=f"MCP tools unavailable: {', '.join(missing)}")
+    gate: ReleaseGate | None = getattr(app.state, "release_gate", None)
+    if gate is not None and not await gate.check():
+        raise HTTPException(503, detail="tool release not verified")
     return {"status": "ready", "agent": AGENT}
 
 

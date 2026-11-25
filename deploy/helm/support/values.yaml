@@ -117,6 +117,9 @@ commonEnv:
   DATABASE_ENTRA_AUTH: "true"   # Postgres is Entra-only: fresh token per connection (db.py)
   REDIS_ENTRA_AUTH: "true"      # Redis: token auth as the pod's identity (redis_factory.py)
   USE_STUB_GATEWAY: "true"      # the real payment gateway is still an open decision
+  # The metadata registry (Cosmos DB). COSMOS_ENDPOINT comes from `endpoints`; with this set, a
+  # service without it refuses to start instead of silently skipping the release checks.
+  REGISTRY_REQUIRED: "true"
 
 # Deployment environment name on every span (deployment.environment.name).
 environment: prod

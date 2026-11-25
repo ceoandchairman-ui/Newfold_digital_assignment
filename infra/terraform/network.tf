@@ -75,6 +75,7 @@ locals {
     servicebus = "privatelink.servicebus.windows.net"
     cognitive  = "privatelink.cognitiveservices.azure.com"
     blob       = "privatelink.blob.core.windows.net"
+    cosmos     = "privatelink.documents.azure.com"
   }
 }
 

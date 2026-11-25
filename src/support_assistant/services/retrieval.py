@@ -46,11 +46,17 @@ async def search_kb(
     candidates: int = 20,
     reranker: Reranker | None = None,
     min_similarity: float | None = None,
+    embedding: tuple[str, str] | None = None,
 ) -> list[Chunk]:
     """Hybrid search. `min_similarity` (cosine, -1 to 1) drops weak VECTOR matches, so an unrelated
     question can return nothing. Keyword matches are kept: they already require the query's words.
-    None means no floor."""
+    None means no floor.
+
+    `embedding` is the (model, version) that embedded the query. Vector matches are then limited to
+    chunks embedded the same way: distances between two models' vectors mean nothing. Keyword
+    matches do not depend on the model, so they keep working while documents are re-embedded."""
     (vec,) = await embedder.embed([query])
+    model, version = embedding or (None, None)
     async with pool.connection() as conn:
         await register_vector_async(conn)
         vec_rows = await (
@@ -59,9 +65,11 @@ async def search_kb(
                 SELECT id, section_id, heading_path, content, content_hash,
                        embedding <=> %s::vector AS distance
                   FROM knowledge_base_chunks
+                 WHERE (%s::text IS NULL OR embedding_model = %s)
+                   AND (%s::text IS NULL OR embedding_version = %s)
                  ORDER BY embedding <=> %s::vector LIMIT %s
                 """,
-                (vec, vec, candidates),
+                (vec, model, model, version, version, vec, candidates),
             )
         ).fetchall()
         kw_rows = await (
@@ -83,7 +91,7 @@ async def search_kb(
 
     by_id = {r["id"]: r for r in (*vec_rows, *kw_rows)}
     fused = rrf([[r["id"] for r in vec_rows], [r["id"] for r in kw_rows]])
-    ranked = sorted(fused, key=fused.__getitem__, reverse=True)
+    ranked = _distinct_text(sorted(fused, key=fused.__getitem__, reverse=True), by_id)
     if reranker is not None and len(ranked) > 1:
         try:
             order = await reranker.rerank(query, [by_id[i]["content"] for i in ranked], top_k)
@@ -101,6 +109,18 @@ async def search_kb(
         **{"query.hash": fingerprint(query)},
     )
     return [_chunk(by_id[i], fused[i]) for i in ranked]
+
+
+def _distinct_text(ranked: list[int], by_id: dict[int, Any]) -> list[int]:
+    """Two documents may now hold the same chunk: return that text once, at its best rank."""
+    seen: set[str] = set()
+    kept: list[int] = []
+    for i in ranked:
+        key = str(by_id[i].get("content_hash") or f"id-{i}")
+        if key not in seen:
+            seen.add(key)
+            kept.append(i)
+    return kept
 
 
 def _chunk(row: dict[str, Any], score: float) -> Chunk:

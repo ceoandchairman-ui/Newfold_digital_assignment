@@ -330,7 +330,7 @@ async def _run(pool, files: dict[str, bytes], monkeypatch) -> indexer.IndexRepor
 async def test_deleting_a_document_from_storage_removes_its_chunks_next_run(monkeypatch):
     pool = FakePool()
     await _run(pool, {"a.md": DOC.encode(), "b.md": b"# B\n\nkeep me"}, monkeypatch)
-    sources = lambda: {s for s in pool.store["rows"].values()}  # noqa: E731
+    sources = lambda: {s for s, _ in pool.store["rows"]}  # noqa: E731
     assert sources() == {"a.md", "b.md"}
     report = await _run(
         pool, {"b.md": b"# B\n\nkeep me"}, monkeypatch

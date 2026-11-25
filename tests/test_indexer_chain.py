@@ -22,34 +22,60 @@ class FakeCursor:
 
 
 class FakeConn:
-    """rows: content_hash -> source."""
+    """store["rows"]: (source, content_hash) -> row. The key IS the table's unique constraint."""
 
     def __init__(self, store):
         self.store = store
 
     async def execute(self, sql, params=None):
         sql = " ".join(sql.split())
-        rows: dict[str, str] = self.store["rows"]
-        if sql.startswith("SELECT content_hash"):
-            return FakeCursor([{"content_hash": h} for h in rows])
+        rows: dict = self.store["rows"]
+        if sql.startswith("SELECT content_hash FROM knowledge_base_chunks WHERE source"):
+            source, model, version = params
+            return FakeCursor(
+                [
+                    {"content_hash": h}
+                    for (s, h), row in rows.items()
+                    if s == source and (row["model"], row["version"]) == (model, version)
+                ]
+            )
+        if sql.startswith("SELECT content_hash, embedding"):
+            wanted, model, version = params
+            return FakeCursor(
+                [
+                    {"content_hash": h, "embedding": row["embedding"]}
+                    for (_, h), row in rows.items()
+                    if h in wanted and (row["model"], row["version"]) == (model, version)
+                ]
+            )
         if sql.startswith("INSERT"):
-            source, content_hash = params[0], params[4]
+            assert "ON CONFLICT (source, content_hash) DO UPDATE" in sql
+            source, section_id, _, _, content_hash, embedding, model, version = params
             self.store["inserts"].append(params)
-            rows.setdefault(content_hash, source)
+            rows[(source, content_hash)] = {
+                "section_id": section_id,
+                "embedding": embedding,
+                "model": model,
+                "version": version,
+            }
+            return FakeCursor()
+        if sql.startswith("UPDATE knowledge_base_chunks SET section_id"):
+            section_id, source, content_hash, _ = params
+            rows[(source, content_hash)]["section_id"] = section_id
             return FakeCursor()
         if sql.startswith("DELETE FROM knowledge_base_chunks WHERE source = %s AND NOT"):
             source, keep = params
-            gone = [h for h, s in rows.items() if s == source and h not in keep]
-            for h in gone:
-                del rows[h]
-            return FakeCursor(rowcount=len(gone))
+            return self._delete(lambda s, h: s == source and h not in keep)
         if sql.startswith("DELETE FROM knowledge_base_chunks WHERE NOT (source = ANY"):
             (sources,) = params
-            gone = [h for h, s in rows.items() if s not in sources]
-            for h in gone:
-                del rows[h]
-            return FakeCursor(rowcount=len(gone))
+            return self._delete(lambda s, h: s not in sources)
         raise AssertionError(f"unexpected SQL: {sql}")
+
+    def _delete(self, wanted):
+        gone = [key for key in self.store["rows"] if wanted(*key)]
+        for key in gone:
+            del self.store["rows"][key]
+        return FakeCursor(rowcount=len(gone))
 
     @asynccontextmanager
     async def transaction(self):
@@ -119,6 +145,6 @@ async def test_editing_one_document_never_touches_another(monkeypatch):
     chain = _chain(pool, monkeypatch)
     await chain.ainvoke({"source": "a.md", "text": DOC})
     await chain.ainvoke({"source": "b.md", "text": "# Other\n\nSomething else.\n"})
-    before = {h for h, s in pool.store["rows"].items() if s == "b.md"}
+    before = {h for s, h in pool.store["rows"] if s == "b.md"}
     await chain.ainvoke({"source": "a.md", "text": "# Guide\n\nCompletely new.\n"})
-    assert {h for h, s in pool.store["rows"].items() if s == "b.md"} == before
+    assert {h for s, h in pool.store["rows"] if s == "b.md"} == before

@@ -47,6 +47,8 @@ spec:
             {{- range $k, $v := $.Values.endpoints }}
             - { name: {{ $k }}, value: {{ $v | quote }} }
             {{- end }}
+            # Part of the search release (releases.py): must match the publisher's value.
+            - { name: EMBEDDING_DIM, value: {{ $.Values.embeddingDim | quote }} }
             # Semantic-convention resource attributes (service.version / deployment.environment.name).
             - { name: SERVICE_VERSION, value: {{ $.Values.image.tag | quote }} }
             - { name: DEPLOYMENT_ENVIRONMENT, value: {{ $.Values.environment | quote }} }

@@ -82,7 +82,13 @@ async def _main(eval_path: str) -> None:
     async def plain(q: str) -> list[str]:
         return [
             c.heading_path
-            for c in await search_kb(pool, embedder, q, candidates=s.rerank_candidates)
+            for c in await search_kb(
+                pool,
+                embedder,
+                q,
+                candidates=s.rerank_candidates,
+                embedding=(s.embedding_model, s.embedding_version),
+            )
         ]
 
     out = {"hybrid": await evaluate(cases, plain)}
@@ -90,7 +96,12 @@ async def _main(eval_path: str) -> None:
 
         async def reranked(q: str) -> list[str]:
             hits = await search_kb(
-                pool, embedder, q, candidates=s.rerank_candidates, reranker=reranker
+                pool,
+                embedder,
+                q,
+                candidates=s.rerank_candidates,
+                reranker=reranker,
+                embedding=(s.embedding_model, s.embedding_version),
             )
             return [c.heading_path for c in hits]
 
