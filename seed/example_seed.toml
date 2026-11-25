@@ -1,5 +1,5 @@
-# Example seed in the format seed.py accepts (E1-2). The original db.toml is lost (D1);
-# these rows match the journey tests (C1002 pays B1005) so dev behaves like the tests.
+# Small example in our own seed format. The supplied data is data/corpus/db.toml.
+# These rows match the journey tests (C1002 pays B1005) so dev behaves like the tests.
 
 [[customers]]
 id = "C1001"
@@ -71,7 +71,7 @@ id = "B1005"
 customer_id = "C1002"
 amount_due = "42.50"
 due_date = 2026-11-01
-status = "ISSUED"
+status = "OVERDUE"
 
 [[bill_line_items]]
 bill_id = "B1005"

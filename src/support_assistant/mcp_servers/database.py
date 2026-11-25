@@ -7,13 +7,13 @@ row-locked payment flow. It is only reachable after the human-approval step in t
 from __future__ import annotations
 
 import uuid
-from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from support_assistant import repositories as repo
+from support_assistant.config import business_today
 from support_assistant.db import Pool
 from support_assistant.mcp_catalog import DATABASE
 from support_assistant.mcp_servers.common import plain, safe
@@ -50,7 +50,7 @@ def build_database_server(
     async def check_suspension_lift(customer_id: str) -> dict[str, Any]:
         """Whether a suspension may be lifted: no overdue bills and an unexpired contract."""
         try:
-            allowed = await can_lift_suspension(pool, customer_id, date.today())
+            allowed = await can_lift_suspension(pool, customer_id, business_today())
             return {"ok": True, "allowed": allowed}
         except Exception as exc:  # noqa: BLE001
             return safe(exc)

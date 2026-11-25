@@ -63,7 +63,9 @@ async def list_bills(conn: Conn, customer_id: str) -> list[Row]:
 
 async def count_overdue_bills(conn: Conn, customer_id: str, today: date) -> int:
     cur = await conn.execute(
-        "SELECT count(*) AS n FROM bills WHERE customer_id = %s AND status <> 'PAID' AND due_date < %s",
+        # The same rule as domain.billing.is_overdue.
+        "SELECT count(*) AS n FROM bills WHERE customer_id = %s"
+        " AND status NOT IN ('PAID', 'DRAFT') AND (status = 'OVERDUE' OR due_date < %s)",
         (customer_id, today),
     )
     row = await cur.fetchone()

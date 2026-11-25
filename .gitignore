@@ -5,6 +5,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# scratch folders and logs from local test runs (can hold throwaway keys): never commit them
+.tmp_work/
+.tmp_out.txt
 
 # docs: only publish the three submission docs
 docs/*

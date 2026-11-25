@@ -10,17 +10,33 @@ from support_assistant.errors import ConflictError, UnknownBillStatus, Validatio
 
 
 class BillStatus(StrEnum):
+    """The five states of the supplied policy, plus none of our own."""
+
+    DRAFT = "DRAFT"
     ISSUED = "ISSUED"
+    OVERDUE = "OVERDUE"
     AWAITING_PAYMENT = "AWAITING_PAYMENT"
     PAID = "PAID"
+    DISPUTED = "DISPUTED"
 
 
-# Legal transitions. A failed payment returns the bill to ISSUED.
+# Legal transitions. Only an OVERDUE bill can enter payment (policy: "check the bill status to make
+# sure it is overdue"), so a payment that fails puts it back to OVERDUE.
 _LEGAL: dict[BillStatus, frozenset[BillStatus]] = {
-    BillStatus.ISSUED: frozenset({BillStatus.AWAITING_PAYMENT}),
-    BillStatus.AWAITING_PAYMENT: frozenset({BillStatus.PAID, BillStatus.ISSUED}),
+    BillStatus.DRAFT: frozenset({BillStatus.ISSUED}),
+    BillStatus.ISSUED: frozenset({BillStatus.OVERDUE}),
+    BillStatus.OVERDUE: frozenset({BillStatus.AWAITING_PAYMENT}),
+    BillStatus.AWAITING_PAYMENT: frozenset({BillStatus.PAID, BillStatus.OVERDUE}),
     BillStatus.PAID: frozenset(),
+    BillStatus.DISPUTED: frozenset(),
 }
+
+
+def is_payable(status: str) -> bool:
+    """The payment rule, from the RECORDED status. A date never makes a bill payable here: the
+    supplied data records B1005 as overdue although its due date is after the policy's current
+    date, and the record wins. Draft, disputed, issued and paid bills cannot be paid."""
+    return status == BillStatus.OVERDUE
 
 
 def parse_status(raw: str) -> BillStatus:
@@ -37,8 +53,14 @@ def assert_transition(current: BillStatus, new: BillStatus) -> None:
 
 
 def is_overdue(due_date: date, status: BillStatus, today: date) -> bool:
-    """The only overdue rule in the system. `today` is injected so tests control the clock."""
-    return status is not BillStatus.PAID and due_date < today
+    """Does this bill count as overdue, for example against lifting a suspension?
+
+    A bill recorded OVERDUE always does. So does an unsettled one past its due date, including a
+    disputed one: the policy does not say, so this fails closed. A paid or draft bill never does.
+    `today` is injected (config.business_today)."""
+    if status in (BillStatus.PAID, BillStatus.DRAFT):
+        return False
+    return status is BillStatus.OVERDUE or due_date < today
 
 
 def validate_payment_amount(requested: Decimal, outstanding: Decimal) -> Decimal:

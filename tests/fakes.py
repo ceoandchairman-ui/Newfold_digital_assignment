@@ -80,7 +80,7 @@ class World:
                 "customer": "C1002",
                 "amount_due": Decimal("42.50"),
                 "due_date": "2026-11-01",
-                "status": "ISSUED",
+                "status": "OVERDUE",
             },
             "B2001": {
                 "id": "B2001",

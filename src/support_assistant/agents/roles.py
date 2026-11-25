@@ -21,6 +21,7 @@ from support_assistant.agents.judge import judge_grounded, objects
 from support_assistant.agents.llm import LLM
 from support_assistant.context import history_for_model
 from support_assistant.contracts import AgentRequest, AgentResponse, Evidence, EvidenceRef
+from support_assistant.domain.billing import is_payable
 from support_assistant.domain.escalation import EscalationReason, escalate
 from support_assistant.domain.intent import CLOSING_REPLY, needs_retrieval
 from support_assistant.errors import ExternalServiceUnavailable
@@ -29,6 +30,13 @@ from support_assistant.logs import error_fields, fingerprint
 from support_assistant.retrieval_client import Retrieval
 
 log = structlog.get_logger()
+
+NO_OVERDUE_BILL_REPLY = (
+    "I can only take payment for an overdue bill, and you don't have one right now."
+)
+PAYMENT_IN_PROGRESS_REPLY = (
+    "A payment on one of your bills is still pending. Please don't pay again."
+)
 
 # The support_agent (all of its sub-agents) reads who the customer is, what they hold, what they
 # owe and what support already knows. It has no write tool: payments are proposals only.
@@ -156,10 +164,16 @@ async def director(
     bills = await h.call(req, "get_bills")
     if not bills.get("ok"):
         return AgentResponse(reply=bills["message"], audit=h.audit)
-    unpaid = [b for b in bills["bills"] if b["status"] != "PAID"]
+    # A draft bill has not been issued, so it is not something the customer owes.
+    unpaid = [b for b in bills["bills"] if b["status"] not in ("PAID", "DRAFT")]
 
-    if intent.kind == "payment" and unpaid:  # a proposal only: evaluator + approval decide
-        target = unpaid[0]
+    if intent.kind == "payment":  # a proposal only: evaluator + approval decide
+        target = next((b for b in bills["bills"] if is_payable(b["status"])), None)
+        if target is None:
+            log.info("payment_not_proposed", reason="no_overdue_bill")
+            awaiting = any(b["status"] == "AWAITING_PAYMENT" for b in bills["bills"])
+            reply = PAYMENT_IN_PROGRESS_REPLY if awaiting else NO_OVERDUE_BILL_REPLY
+            return AgentResponse(reply=reply, audit=h.audit)  # fixed text: no model decides this
         action = {"type": "pay_bill", "bill_id": target["id"], "amount": str(target["amount_due"])}
         log.info("payment_proposed", bill_id=target["id"])
         return AgentResponse(proposed_action=action, audit=h.audit)
@@ -515,7 +529,11 @@ async def evaluator(
 
     bills = await h.call(req, "get_bills")
     bill = next((b for b in bills.get("bills", []) if b["id"] == bill_id), None)
-    if bill is None or bill["status"] == "PAID" or Decimal(amount) > Decimal(bill["amount_due"]):
+    if (
+        bill is None
+        or not is_payable(bill["status"])
+        or Decimal(amount) > Decimal(bill["amount_due"])
+    ):
         return _payment_verdict(h, "reject", "bill_mismatch", "Payment does not match the bill.")
 
     recent = await h.call(req, "check_recent_payments", bill_id=bill_id, minutes=10)

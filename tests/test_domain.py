@@ -37,9 +37,9 @@ def test_unknown_status_fails_closed():
 @pytest.mark.parametrize(
     ("current", "new"),
     [
-        (BillStatus.ISSUED, BillStatus.AWAITING_PAYMENT),
+        (BillStatus.OVERDUE, BillStatus.AWAITING_PAYMENT),
         (BillStatus.AWAITING_PAYMENT, BillStatus.PAID),
-        (BillStatus.AWAITING_PAYMENT, BillStatus.ISSUED),
+        (BillStatus.AWAITING_PAYMENT, BillStatus.OVERDUE),
     ],
 )
 def test_legal_transitions(current, new):

@@ -86,7 +86,7 @@ async def test_journey2_apn_troubleshooting(monkeypatch):
 async def test_journey3_customer_pays_bill_end_to_end(env):
     cfg = env.cfg("C1002")
     paused = await env.graph.ainvoke(env.state("C1002", "please pay my bill"), cfg)
-    assert paused["__interrupt__"] and env.world.bills["B1005"]["status"] == "ISSUED"
+    assert paused["__interrupt__"] and env.world.bills["B1005"]["status"] == "OVERDUE"
 
     done = await env.graph.ainvoke(Command(resume={"approved": True}), cfg)
     assert env.world.bills["B1005"]["status"] == "PAID"
@@ -98,7 +98,7 @@ async def test_unverified_customer_gets_nothing(env):
     out = await env.graph.ainvoke(
         env.state("C1002", "pay my bill", verified=False), env.cfg("C1002")
     )
-    assert "verify" in out["reply"].lower() and env.world.bills["B1005"]["status"] == "ISSUED"
+    assert "verify" in out["reply"].lower() and env.world.bills["B1005"]["status"] == "OVERDUE"
 
 
 async def test_declining_the_confirmation_charges_nothing(env):
@@ -121,7 +121,7 @@ async def test_duplicate_payment_is_rejected_by_the_evaluator(env):
 async def test_cannot_pay_another_customers_bill(env):
     tools = make_tools(env.world, env.gateway)
     res = await tools["process_payment"](customer_id="C1001", bill_id="B1005", amount="42.50")
-    assert res["ok"] is False and env.world.bills["B1005"]["status"] == "ISSUED"
+    assert res["ok"] is False and env.world.bills["B1005"]["status"] == "OVERDUE"
 
 
 async def test_gateway_decline_tells_the_customer_and_releases_the_bill(monkeypatch):
@@ -129,7 +129,7 @@ async def test_gateway_decline_tells_the_customer_and_releases_the_bill(monkeypa
     cfg = e.cfg("C1002")
     await e.graph.ainvoke(e.state("C1002", "pay my bill"), cfg)
     out = await e.graph.ainvoke(Command(resume={"approved": True}), cfg)
-    assert "declined" in out["reply"].lower() and e.world.bills["B1005"]["status"] == "ISSUED"
+    assert "declined" in out["reply"].lower() and e.world.bills["B1005"]["status"] == "OVERDUE"
     assert "successful" not in out["reply"].lower()
 
 

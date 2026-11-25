@@ -47,7 +47,7 @@ def _tools(bills: list[dict], recent: int = 0):
     return registry, seen
 
 
-BILL = {"id": "B1", "amount_due": "50.00", "due_date": "2026-11-01", "status": "ISSUED"}
+BILL = {"id": "B1", "amount_due": "50.00", "due_date": "2026-11-01", "status": "OVERDUE"}
 
 
 # --- retrieval fusion ----------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from datetime import date
 from functools import lru_cache
 from typing import Literal
 
@@ -200,6 +202,11 @@ class Settings(BaseSettings):
     google_drive_folder_id: str | None = None  # PLACEHOLDER: the shared policy folder
 
     # --- Feature flags (stubs for local and CI) ------------------------------
+    # "Today" for billing and contract rules. Unset = the real date. The supplied policy states
+    # "the current time is 2025-02-25", so demos on that data set BUSINESS_DATE=2025-02-25.
+    # Never set it in production.
+    business_date: date | None = None
+
     use_stub_sms: bool = True
     use_stub_email: bool = True
     use_stub_gateway: bool = True
@@ -212,6 +219,12 @@ class Settings(BaseSettings):
         if self.db_pool_min_size > self.db_pool_max_size:
             raise ValueError("db_pool_min_size must be <= db_pool_max_size")
         return self
+
+
+def business_today() -> date:
+    """The one clock for billing and contract rules (see `Settings.business_date`)."""
+    configured = os.environ.get("BUSINESS_DATE", "").strip()
+    return date.fromisoformat(configured) if configured else date.today()
 
 
 @lru_cache

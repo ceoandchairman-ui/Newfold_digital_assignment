@@ -67,7 +67,7 @@ def test_the_example_seed_is_valid_and_matches_the_journeys():
     ("bad", "why"),
     [
         (EXAMPLE.replace('plan_id = "P-PLUS"', 'plan_id = "P-NOPE"'), "unknown plan"),
-        (EXAMPLE.replace('status = "ISSUED"', 'status = "MAYBE"'), "status"),
+        (EXAMPLE.replace('status = "OVERDUE"', 'status = "MAYBE"'), "status"),
         (EXAMPLE.replace('amount_due = "42.50"', 'amount_due = "-1"'), "amount_due"),
         ("not = [valid", "toml"),
     ],
@@ -78,7 +78,7 @@ def test_an_invalid_seed_is_rejected_before_anything_is_written(bad, why):
 
 
 def test_two_awaiting_bills_for_one_customer_are_rejected():
-    doubled = EXAMPLE.replace('status = "ISSUED"', 'status = "AWAITING_PAYMENT"') + (
+    doubled = EXAMPLE.replace('status = "OVERDUE"', 'status = "AWAITING_PAYMENT"') + (
         '\n[[bills]]\nid = "B9"\ncustomer_id = "C1002"\namount_due = "1.00"\n'
         'due_date = 2026-11-02\nstatus = "AWAITING_PAYMENT"\n'
     )

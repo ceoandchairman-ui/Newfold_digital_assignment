@@ -1,8 +1,8 @@
 """Payment flow (E3-4, E3-5): reserve -> gateway -> settle, idempotent, row-locked, verified.
 
-Phase 1 (transaction): lock the bill, check state/amount, ISSUED -> AWAITING_PAYMENT, insert PENDING.
+Phase 1 (transaction): lock the bill, check state/amount, OVERDUE -> AWAITING_PAYMENT, insert PENDING.
 The gateway call happens outside any DB transaction so no row lock is held across the network.
-Phase 2 (transaction): PENDING -> SUCCEEDED and bill -> PAID, or FAILED and bill back to ISSUED.
+Phase 2 (transaction): PENDING -> SUCCEEDED and bill -> PAID, or FAILED and bill back to OVERDUE.
 A read-after-write check confirms the bill is PAID before we tell the customer.
 
 Outcomes the gateway can report:
@@ -27,6 +27,7 @@ from support_assistant.db import Pool
 from support_assistant.domain.billing import (
     BillStatus,
     assert_transition,
+    is_payable,
     parse_status,
     validate_payment_amount,
 )
@@ -113,6 +114,8 @@ async def pay_bill(
             status = parse_status(bill["status"])
             if status is BillStatus.PAID:
                 raise DuplicateOperation("bill already paid")
+            if not is_payable(status):
+                raise ConflictError("only an overdue bill can be paid")
             validate_payment_amount(amount, bill["amount_due"])
             assert_transition(status, BillStatus.AWAITING_PAYMENT)
             await repo.set_bill_status(conn, bill_id, BillStatus.AWAITING_PAYMENT)
@@ -193,4 +196,4 @@ async def _release(pool: Pool, bill_id: str, tx_id: int) -> None:
     async with pool.connection() as conn:
         async with conn.transaction():
             await repo.set_transaction_status(conn, tx_id, "FAILED")
-            await repo.set_bill_status(conn, bill_id, BillStatus.ISSUED)
+            await repo.set_bill_status(conn, bill_id, BillStatus.OVERDUE)

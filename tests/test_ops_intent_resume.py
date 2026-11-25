@@ -118,7 +118,7 @@ async def test_the_director_follows_the_classifier():
     async def get_bills(customer_id):
         return {
             "ok": True,
-            "bills": [{"id": "B1", "amount_due": "5", "due_date": "d", "status": "ISSUED"}],
+            "bills": [{"id": "B1", "amount_due": "5", "due_date": "d", "status": "OVERDUE"}],
         }
 
     req = AgentRequest(

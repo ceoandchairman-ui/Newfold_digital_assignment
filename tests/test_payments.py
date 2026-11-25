@@ -24,7 +24,12 @@ from support_assistant.services.gateway_sim import FaultMode, SimulatedGateway
 class Ledger:
     def __init__(self) -> None:
         self.bills = {
-            "B1": {"id": "B1", "customer": "C1", "amount_due": Decimal("50.00"), "status": "ISSUED"}
+            "B1": {
+                "id": "B1",
+                "customer": "C1",
+                "amount_due": Decimal("50.00"),
+                "status": "OVERDUE",
+            }
         }
         self.tx: dict[str, dict] = {}
         self._next = 1
@@ -114,13 +119,13 @@ async def test_replay_with_same_key_never_charges_twice(ledger):
 async def test_decline_releases_the_bill(ledger):
     with pytest.raises(PaymentDeclined):
         await _pay(SimulatedGateway(FaultMode.DECLINE))
-    assert ledger.bills["B1"]["status"] == "ISSUED" and ledger.tx["K1"]["status"] == "FAILED"
+    assert ledger.bills["B1"]["status"] == "OVERDUE" and ledger.tx["K1"]["status"] == "FAILED"
 
 
 async def test_unreachable_gateway_releases_the_bill(ledger):
     with pytest.raises(ExternalServiceUnavailable):
         await _pay(SimulatedGateway(FaultMode.UNAVAILABLE))
-    assert ledger.bills["B1"]["status"] == "ISSUED"
+    assert ledger.bills["B1"]["status"] == "OVERDUE"
 
 
 async def test_timeout_keeps_attempt_pending_and_blocks_retry(ledger):
@@ -152,7 +157,7 @@ async def test_reconcile_releases_when_gateway_never_saw_it(ledger):
         await payments.reconcile_payment(FakePool(), gw, customer_id="C1", idempotency_key="K1")
         is None
     )
-    assert ledger.bills["B1"]["status"] == "ISSUED"
+    assert ledger.bills["B1"]["status"] == "OVERDUE"
 
 
 async def test_guards_overpayment_other_customer_and_reused_key(ledger):

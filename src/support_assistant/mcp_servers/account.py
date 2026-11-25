@@ -7,12 +7,12 @@ them out.
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from support_assistant import repositories as repo
+from support_assistant.config import business_today
 from support_assistant.db import Pool
 from support_assistant.mcp_catalog import ACCOUNT
 from support_assistant.mcp_servers.common import mask_email, plain, safe
@@ -64,7 +64,7 @@ def build_account_server(pool: Pool, *, host: str = "0.0.0.0", port: int = ACCOU
         try:
             async with pool.connection() as conn:
                 lines = await repo.list_lines(conn, customer_id)
-            today = date.today()
+            today = business_today()
             contracts = []
             for ln in lines:
                 end = ln.get("contract_end_date")

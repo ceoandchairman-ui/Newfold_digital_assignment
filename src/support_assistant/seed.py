@@ -1,9 +1,9 @@
 """Seed loader (E1-2): load reference and demo data from TOML, idempotently.
 
-    python -m support_assistant.seed seed/example_seed.toml
+    python -m support_assistant.seed data/corpus/db.toml       # the supplied telecom data
+    python -m support_assistant.seed seed/example_seed.toml    # the small example
 
-The original seed file (db.toml) is lost (D1), so this loader defines the format it accepts
-(see seed/example_seed.toml). When the real file is recovered, map it onto these tables.
+Two formats are accepted: the supplied db.toml (converted by corpus.py) and our own.
 
 Every row is validated before anything is written, then all rows are upserted in foreign-key order
 in ONE transaction: a bad file changes nothing, and loading the same file twice changes nothing.
@@ -14,13 +14,14 @@ from __future__ import annotations
 import asyncio
 import sys
 import tomllib
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from support_assistant.corpus import CorpusError, convert_corpus, is_corpus
 from support_assistant.db import Pool
 
 
@@ -30,6 +31,9 @@ class Customer(BaseModel):
     date_of_birth: date
     phone: str = Field(min_length=3)
     email: str | None = None
+    account_status: str = "ACTIVE"
+    last_extension_date: date | None = None
+    goodwill_credit_used_this_year: Decimal = Field(Decimal(0), ge=0)
 
 
 class Plan(BaseModel):
@@ -37,6 +41,7 @@ class Plan(BaseModel):
     name: str
     monthly_price: Decimal = Field(ge=0)
     data_limit_mb: int | None = Field(None, ge=0)
+    refuel_price_per_gb: Decimal | None = Field(None, ge=0)
 
 
 class PaymentMethod(BaseModel):
@@ -44,6 +49,7 @@ class PaymentMethod(BaseModel):
     customer_id: str
     kind: str
     last4: str | None = Field(None, min_length=4, max_length=4)
+    expiration: str | None = None
 
 
 class Line(BaseModel):
@@ -54,6 +60,11 @@ class Line(BaseModel):
     status: str
     data_used_mb: int = Field(0, ge=0)
     contract_end_date: date | None = None
+    data_refueling_mb: int = Field(0, ge=0)
+    roaming_enabled: bool = False
+    last_plan_change_date: date | None = None
+    last_sim_replacement_date: date | None = None
+    suspension_start_date: date | None = None
 
 
 class Device(BaseModel):
@@ -61,6 +72,14 @@ class Device(BaseModel):
     line_id: str
     model: str
     imei: str | None = None
+    device_type: str | None = None
+    esim_capable: bool | None = None
+    activated: bool | None = None
+    activation_date: datetime | None = None
+    last_esim_transfer_date: datetime | None = None
+
+
+BillState = Literal["DRAFT", "ISSUED", "OVERDUE", "AWAITING_PAYMENT", "PAID", "DISPUTED"]
 
 
 class Bill(BaseModel):
@@ -68,7 +87,10 @@ class Bill(BaseModel):
     customer_id: str
     amount_due: Decimal = Field(ge=0)
     due_date: date
-    status: Literal["ISSUED", "AWAITING_PAYMENT", "PAID"]
+    status: BillState
+    period_start: date | None = None
+    period_end: date | None = None
+    issue_date: date | None = None
 
 
 class BillLineItem(BaseModel):
@@ -139,32 +161,27 @@ class Seed(BaseModel):
 
 def parse_seed(text: str) -> Seed:
     try:
-        seed = Seed.model_validate(tomllib.loads(text))
-    except (tomllib.TOMLDecodeError, ValidationError) as exc:
+        data = tomllib.loads(text)
+        if is_corpus(data):
+            data = convert_corpus(data)
+        seed = Seed.model_validate(data)
+    except (tomllib.TOMLDecodeError, ValidationError, CorpusError) as exc:
         raise SeedError(str(exc)) from exc
     seed.check_references()
     return seed
 
 
+def _columns(model: type[BaseModel]) -> tuple[str, ...]:
+    return tuple(model.model_fields)  # each model's fields are its table's columns
+
+
 _UPSERTS: list[tuple[str, str, tuple[str, ...]]] = [
-    ("customers", "customers", ("id", "full_name", "date_of_birth", "phone", "email")),
-    ("plans", "plans", ("id", "name", "monthly_price", "data_limit_mb")),
-    ("payment_methods", "payment_methods", ("id", "customer_id", "kind", "last4")),
-    (
-        "lines",
-        "lines",
-        (
-            "id",
-            "customer_id",
-            "plan_id",
-            "phone_number",
-            "status",
-            "data_used_mb",
-            "contract_end_date",
-        ),
-    ),
-    ("devices", "devices", ("id", "line_id", "model", "imei")),
-    ("bills", "bills", ("id", "customer_id", "amount_due", "due_date", "status")),
+    ("customers", "customers", _columns(Customer)),
+    ("plans", "plans", _columns(Plan)),
+    ("payment_methods", "payment_methods", _columns(PaymentMethod)),
+    ("lines", "lines", _columns(Line)),
+    ("devices", "devices", _columns(Device)),
+    ("bills", "bills", _columns(Bill)),
 ]
 
 
