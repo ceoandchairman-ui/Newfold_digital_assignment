@@ -38,7 +38,7 @@ jobs:
       TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
       - run: terraform init -input=false -backend-config="envs/${TF_ENV}.backend.hcl"
       # -lock=false: this job's identity is read-only and cannot take the state lease. Safe, because
       # the apply job takes the lock and applies this exact plan (it fails if the state moved).
@@ -81,7 +81,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_wrapper: false }
       - uses: actions/download-artifact@v4
         with: { name: "tfplan-${{ inputs.environment }}", path: infra/terraform }
