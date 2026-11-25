@@ -38,6 +38,11 @@ TOOL_CACHE = _meter.create_counter("support.tool_cache.lookups", unit="{lookup}"
 CIRCUIT_OPENED = _meter.create_counter("support.mcp.circuit_opened", unit="{event}")
 BUDGET_REFUSALS = _meter.create_counter("support.budget.refusals", unit="{turn}")
 PROMPT_ATTACKS = _meter.create_counter("support.prompt_attacks.blocked", unit="{turn}")
+LLM_FALLBACKS = _meter.create_counter("support.llm.fallbacks", unit="{call}")
+TURN_TIMEOUTS = _meter.create_counter("support.turn.timeouts", unit="{turn}")
+LOAD_SHED = _meter.create_counter("support.load_shed", unit="{request}")
+RATE_LIMITED = _meter.create_counter("support.rate_limited", unit="{request}")
+AGENT_CIRCUIT_OPENED = _meter.create_counter("support.agent.circuit_opened", unit="{event}")
 
 
 def current_request_id() -> str:

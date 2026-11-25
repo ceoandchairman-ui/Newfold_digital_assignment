@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
+import structlog
 from pydantic import BaseModel
 
 from support_assistant.agents.harness import Harness
@@ -19,11 +19,16 @@ from support_assistant.agents.intent import (
 )
 from support_assistant.agents.judge import judge_grounded, objects
 from support_assistant.agents.llm import LLM
-from support_assistant.contracts import AgentRequest, AgentResponse
+from support_assistant.context import history_for_model
+from support_assistant.contracts import AgentRequest, AgentResponse, Evidence, EvidenceRef
 from support_assistant.domain.escalation import EscalationReason, escalate
 from support_assistant.domain.intent import CLOSING_REPLY, needs_retrieval
+from support_assistant.errors import ExternalServiceUnavailable
 from support_assistant.guards import clean_untrusted, looks_like_injection, wrap_untrusted
-from support_assistant.services.retrieval import Chunk
+from support_assistant.logs import error_fields, fingerprint
+from support_assistant.retrieval_client import Retrieval
+
+log = structlog.get_logger()
 
 # The support_agent (all of its sub-agents) reads who the customer is, what they hold, what they
 # owe and what support already knows. It has no write tool: payments are proposals only.
@@ -75,7 +80,34 @@ def _last_user(req: AgentRequest) -> str:
     return ""
 
 
-Searcher = Callable[[str], Awaitable[list[Chunk]]]
+MAX_PASSAGES = 3  # how many retrieved chunks one answer may be written from
+
+
+async def _guidance(req: AgentRequest, retrieval: Retrieval, text: str) -> list[Evidence]:
+    """The company guidance an answer may use: searched with the backend's rewritten query when it
+    sent one. Retrieved text is untrusted, so anything that tries to instruct the model is dropped.
+    Raises ExternalServiceUnavailable when the search could not be done."""
+    query = str(req.context.get("search_query") or text)
+    found = await retrieval.search(query)
+    safe = [e for e in found if not looks_like_injection(e.content)]
+    used = safe[:MAX_PASSAGES]
+    log.info(
+        "guidance_retrieved",
+        found=len(found),
+        dropped_as_injection=len(found) - len(safe),
+        chunk_ids=[e.ref.id for e in used],
+        chunk_hashes=[e.ref.content_hash[:12] for e in used],
+        **{"query.hash": fingerprint(query)},
+    )
+    return used
+
+
+def _hand_over(reason: EscalationReason, h: Harness) -> AgentResponse:
+    log.warning("handover_to_human", agent=h.agent, reason=reason.value)
+    e = escalate(reason)
+    return AgentResponse(
+        reply=e.message, escalate=True, escalation_reason=e.reason.value, audit=h.audit
+    )
 
 
 def _account_facts(lines: list[dict[str, Any]]) -> str:
@@ -107,13 +139,17 @@ async def director(
     h.require_verified(req)
     text = clean_untrusted(_last_user(req))
     intent = await (classifier or KeywordIntentClassifier()).classify(text)
+    log.info("billing_intent_classified", kind=intent.kind, confidence=intent.confidence)
 
     if intent.kind == "account":
         acct = await h.call(req, "get_account_summary")
         if not acct.get("ok"):
             return AgentResponse(reply=acct["message"], audit=h.audit)
         reply = await llm.respond(
-            "You are a careful telecom account assistant.", _account_facts(acct["lines"]), text
+            "You are a careful telecom account assistant.",
+            _account_facts(acct["lines"]),
+            text,
+            history_for_model(req.messages),
         )
         return AgentResponse(reply=reply, audit=h.audit)
 
@@ -125,6 +161,7 @@ async def director(
     if intent.kind == "payment" and unpaid:  # a proposal only: evaluator + approval decide
         target = unpaid[0]
         action = {"type": "pay_bill", "bill_id": target["id"], "amount": str(target["amount_due"])}
+        log.info("payment_proposed", bill_id=target["id"])
         return AgentResponse(proposed_action=action, audit=h.audit)
 
     facts = (
@@ -134,7 +171,9 @@ async def director(
             f"bill {b['id']}: {b['amount_due']} due {b['due_date']} ({b['status']})" for b in unpaid
         )
     )
-    reply = await llm.respond("You are a careful telecom billing assistant.", facts, text)
+    reply = await llm.respond(
+        "You are a careful telecom billing assistant.", facts, text, history_for_model(req.messages)
+    )
     return AgentResponse(reply=reply, audit=h.audit)
 
 
@@ -152,7 +191,10 @@ async def support_route(
     """
     h.require_verified(req)
     text = clean_untrusted(_last_user(req))
-    decision = await (classifier or KeywordRouteClassifier()).classify(text)
+    decision = await (classifier or KeywordRouteClassifier()).classify(
+        text, history_for_model(req.messages)
+    )
+    log.info("route_decided", route=decision.route, confidence=decision.confidence)
     return AgentResponse(route=decision.route, route_confidence=decision.confidence, audit=h.audit)
 
 
@@ -168,8 +210,10 @@ async def normal_resp_gen(req: AgentRequest, h: Harness, llm: LLM) -> AgentRespo
     h.require_verified(req)
     text = clean_untrusted(_last_user(req))
     if not needs_retrieval(text):  # "thanks", "ok": no model call at all
+        log.info("turn_acknowledged", agent="normal")
         return AgentResponse(reply=CLOSING_REPLY, audit=h.audit)
-    return AgentResponse(reply=await llm.respond(NORMAL_INSTRUCTIONS, "", text), audit=h.audit)
+    reply = await llm.respond(NORMAL_INSTRUCTIONS, "", text, history_for_model(req.messages))
+    return AgentResponse(reply=reply, audit=h.audit)
 
 
 INSTRUCT_INSTRUCTIONS = (
@@ -190,7 +234,8 @@ async def _read(req: AgentRequest, h: Harness, tool: str, **args: Any) -> dict[s
     """One read-only tool result, or None. A missing or failing read never costs the turn."""
     try:
         result = await h.call(req, tool, **args)
-    except Exception:  # noqa: BLE001 - the answer is then written from what else we have
+    except Exception as exc:  # noqa: BLE001 - the answer is then written from what else we have
+        log.warning("tool_read_failed", tool=tool, **error_fields(exc))
         return None
     return result if result.get("ok") else None
 
@@ -203,15 +248,25 @@ def _contract_facts(contracts: list[dict[str, Any]]) -> str:
     )
 
 
-async def instruct_gen(req: AgentRequest, h: Harness, llm: LLM) -> AgentResponse:
+async def instruct_gen(
+    req: AgentRequest, h: Harness, llm: LLM, retrieval: Retrieval
+) -> AgentResponse:
     """The reasoning sub-agent (E4-4): policy and "why" questions over the customer's own facts.
 
-    Facts come from read-only tools through the harness. Policy text comes from the independent
-    retriever (the graph's `retrieve` node), never from an MCP tool, and is screened and wrapped as
-    untrusted. It cannot propose or perform an action.
+    Facts come from read-only tools through the harness. Policy text comes from the retrieval
+    service, never from an MCP tool, and is screened and wrapped as untrusted. If that service
+    cannot be reached, a human takes over: policy is never answered from the model's memory.
+    It cannot propose or perform an action.
     """
     h.require_verified(req)
     text = clean_untrusted(_last_user(req))
+    used: list[Evidence] = []
+    if needs_retrieval(text):
+        try:
+            used = await _guidance(req, retrieval, text)
+        except ExternalServiceUnavailable as exc:
+            log.error("retrieval_unavailable", agent="instruct", **error_fields(exc))
+            return _hand_over(EscalationReason.GUIDANCE_UNAVAILABLE, h)
     acct, bills, contract, cases, recent = await asyncio.gather(
         _read(req, h, "get_account_summary"),
         _read(req, h, "get_bills"),
@@ -235,21 +290,15 @@ async def instruct_gen(req: AgentRequest, h: Harness, llm: LLM) -> AgentResponse
         parts.append(
             "Conversations in the last days: " + "; ".join(x["summary"] for x in recent["sessions"])
         )
-    supplied = [
-        (str(c.get("section_id", "")), str(c.get("heading_path", "")), str(c["content"]))
-        for c in req.context.get("kb_chunks") or []
-    ]
-    used = [p for p in supplied if not looks_like_injection(p[2])][:3]
-    parts += [wrap_untrusted(f"policy {sec}", body) for sec, _, body in used]
+    parts += [wrap_untrusted(f"policy {e.section_id}", e.content) for e in used]
     if not parts:
-        e = escalate(EscalationReason.OUT_OF_SCOPE)
-        return AgentResponse(
-            reply=e.message, escalate=True, escalation_reason=e.reason.value, audit=h.audit
-        )
-    reply = await llm.respond(INSTRUCT_INSTRUCTIONS, "\n".join(parts), text)
+        return _hand_over(EscalationReason.OUT_OF_SCOPE, h)
+    reply = await llm.respond(
+        INSTRUCT_INSTRUCTIONS, "\n".join(parts), text, history_for_model(req.messages)
+    )
     if used:
         reply = f"{reply}\n\n{_citation(used)}"
-    return AgentResponse(reply=reply, audit=h.audit)
+    return AgentResponse(reply=reply, evidence=[e.ref for e in used], audit=h.audit)
 
 
 DEVICE_ACTIONS = frozenset(
@@ -286,17 +335,22 @@ async def _next_step(llm: LLM, context: str, text: str, device_ids: list[str]) -
     try:
         raw = await llm.respond(TOOL_ROUTER_INSTRUCTIONS, context, text)
         step = ToolStep.model_validate(json.loads(raw[raw.find("{") : raw.rfind("}") + 1]))
-    except Exception:  # noqa: BLE001 - not a valid action: no tool
+    except Exception as exc:  # noqa: BLE001 - not a valid action: no tool
+        log.info("device_step_rejected", reason="invalid_output", **error_fields(exc))
         return None
     if step.tool is None:
         return None
-    if step.tool not in DEVICE_ACTIONS:  # only device tools; the harness allow-list backs this up
-        return None
     if step.device_id is None and len(device_ids) == 1:
         step.device_id = device_ids[0]
-    if step.device_id not in device_ids:  # a device that is not this customer's is never touched
-        return None
-    if step.tool in _NEEDS_ENABLED and step.enabled is None:
+    refusal = None
+    if step.tool not in DEVICE_ACTIONS:  # only device tools; the harness allow-list backs this up
+        refusal = "not_a_device_tool"
+    elif step.device_id not in device_ids:  # a device that is not this customer's is never touched
+        refusal = "unknown_device"
+    elif step.tool in _NEEDS_ENABLED and step.enabled is None:
+        refusal = "missing_enabled"
+    if refusal:
+        log.warning("device_step_rejected", reason=refusal)
         return None
     return step
 
@@ -338,7 +392,8 @@ async def _device_checks(
             if result.get("sim_locked"):
                 return seen, True
         return seen, False
-    except Exception:  # noqa: BLE001 - never lose the turn to the tool loop
+    except Exception as exc:  # noqa: BLE001 - never lose the turn to the tool loop
+        log.warning("device_checks_aborted", **error_fields(exc))
         return [], False
 
 
@@ -348,38 +403,25 @@ def plain_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 async def troubleshooter(
-    req: AgentRequest, h: Harness, llm: LLM, search: Searcher, tool_steps: int = 0
+    req: AgentRequest, h: Harness, llm: LLM, retrieval: Retrieval, tool_steps: int = 0
 ) -> AgentResponse:
     h.require_verified(req)
     text = clean_untrusted(_last_user(req))
     # Lazy retrieval (E4-5): "thanks" or "that worked" needs no manual search and no model call.
     if not needs_retrieval(text):
+        log.info("turn_acknowledged", agent="troubleshooter")
         return AgentResponse(reply=CLOSING_REPLY, audit=h.audit)
-    # Prefer the hits the graph's retrieve node already fetched; search ourselves only as a fallback.
-    supplied = req.context.get("kb_chunks")
-    if supplied:
-        passages = [
-            (str(c["section_id"]), str(c.get("heading_path", "")), str(c["content"]))
-            for c in supplied
-        ]
-    else:
-        found = await search(str(req.context.get("search_query") or text))
-        passages = [(c.section_id, c.heading_path, c.content) for c in found]
-    # Retrieved text is untrusted: drop anything that tries to give the model instructions.
-    passages = [p for p in passages if not looks_like_injection(p[2])]
-    if not passages:
-        e = escalate(EscalationReason.OUT_OF_SCOPE)
-        return AgentResponse(
-            reply=e.message, escalate=True, escalation_reason=e.reason.value, audit=h.audit
-        )
-    used = passages[:3]
-    facts = "\n".join(wrap_untrusted(f"section {sec}", body) for sec, _, body in used)
+    try:
+        used = await _guidance(req, retrieval, text)
+    except ExternalServiceUnavailable as exc:
+        log.error("retrieval_unavailable", agent="troubleshooter", **error_fields(exc))
+        return _hand_over(EscalationReason.GUIDANCE_UNAVAILABLE, h)
+    if not used:
+        return _hand_over(EscalationReason.OUT_OF_SCOPE, h)
+    facts = "\n".join(wrap_untrusted(f"section {e.section_id}", e.content) for e in used)
     observed, sim_locked = await _device_checks(req, h, llm, text, facts, tool_steps)
     if sim_locked:  # a locked SIM cannot be fixed by retrying anything: hand over (E3-7)
-        e = escalate(EscalationReason.SIM_LOCKED)
-        return AgentResponse(
-            reply=e.message, escalate=True, escalation_reason=e.reason.value, audit=h.audit
-        )
+        return _hand_over(EscalationReason.SIM_LOCKED, h)
     if observed:
         facts += "\nDevice checks already run (tool results):\n" + "\n".join(observed)
     reply = await llm.respond(
@@ -387,15 +429,18 @@ async def troubleshooter(
         "the device checks. Say what was found and what to do next.",
         facts,
         text,
+        history_for_model(req.messages),
     )
-    return AgentResponse(reply=f"{reply}\n\n{_citation(used)}", audit=h.audit)
+    return AgentResponse(
+        reply=f"{reply}\n\n{_citation(used)}", evidence=[e.ref for e in used], audit=h.audit
+    )
 
 
-def _citation(passages: list[tuple[str, str, str]]) -> str:
+def _citation(passages: list[Evidence]) -> str:
     """Manual citations appended to every troubleshooting answer (E5-4)."""
     seen: list[str] = []
-    for sec, heading, _ in passages:
-        label = heading or f"section {sec}"
+    for passage in passages:
+        label = passage.heading_path or f"section {passage.section_id}"
         if label not in seen:
             seen.append(label)
     return "Source: " + "; ".join(seen[:2])
@@ -411,11 +456,35 @@ def reply_invariants_hold(reply: str, intent: str | None) -> bool:
     return True
 
 
+async def _used_evidence(
+    req: AgentRequest, retrieval: Retrieval | None
+) -> list[dict[str, str]] | None:
+    """The chunks a troubleshooting reply was written from, fetched again by reference. None means
+    they cannot all be shown: no references, unreadable ones, a chunk gone or changed, or the
+    retrieval service down. A reply whose evidence cannot be checked must not pass."""
+    try:
+        refs = [EvidenceRef.model_validate(r) for r in req.context.get("evidence_refs") or []]
+        if not refs or retrieval is None:
+            log.warning("evidence_unverifiable", reason="no_references")
+            return None
+        found = await retrieval.fetch(refs)
+    except (ValueError, ExternalServiceUnavailable) as exc:
+        log.warning("evidence_unverifiable", reason="fetch_failed", **error_fields(exc))
+        return None
+    if found.missing or len(found.results) != len(refs):
+        log.warning(
+            "evidence_unverifiable", reason="missing_or_changed", missing=len(found.missing)
+        )
+        return None
+    return [{"section_id": e.section_id, "content": e.content} for e in found.results]
+
+
 async def evaluator(
     req: AgentRequest,
     h: Harness,
     judge: LLM | None = None,
     judge_timeout_s: float = 4.0,
+    retrieval: Retrieval | None = None,
 ) -> AgentResponse:
     """Independent check of a proposed payment (plain code) or of a finished reply (rules, then an
     optional LLM judge for groundedness). The payment verdict never involves a model."""
@@ -423,10 +492,17 @@ async def evaluator(
     if req.context.get("mode") == "reply_check":
         reply, intent = str(req.context.get("reply", "")), req.context.get("intent")
         ok = reply_invariants_hold(reply, intent)  # rules first: a failure needs no model call
-        chunks = [c for c in req.context.get("kb_chunks") or [] if c.get("content")]
-        judgeable = intent == "TROUBLESHOOT" and reply != CLOSING_REPLY and bool(chunks)
-        if ok and judge is not None and judgeable:  # the fixed closing text is not a claim
-            ok = not objects(await judge_grounded(judge, reply, chunks, timeout_s=judge_timeout_s))
+        # The fixed closing text is not a claim. INSTRUCT replies are not judged: they also rest
+        # on account facts, which the judge does not see, so it would object to correct answers.
+        if ok and intent == "TROUBLESHOOT" and reply != CLOSING_REPLY:
+            chunks = await _used_evidence(req, retrieval)
+            if chunks is None:
+                ok = False
+            elif judge is not None:
+                ok = not objects(
+                    await judge_grounded(judge, reply, chunks, timeout_s=judge_timeout_s)
+                )
+        log.info("reply_checked", verdict="approve" if ok else "reject", intent=intent)
         return AgentResponse(
             verdict="approve" if ok else "reject",
             reply="" if ok else "Reply failed an invariant.",
@@ -435,18 +511,23 @@ async def evaluator(
     action = req.context.get("proposed_action") or {}
     bill_id, amount = action.get("bill_id"), action.get("amount")
     if action.get("type") != "pay_bill" or not bill_id or amount is None:
-        return AgentResponse(verdict="reject", reply="Unsupported action.", audit=h.audit)
+        return _payment_verdict(h, "reject", "unsupported_action", "Unsupported action.")
 
     bills = await h.call(req, "get_bills")
     bill = next((b for b in bills.get("bills", []) if b["id"] == bill_id), None)
     if bill is None or bill["status"] == "PAID" or Decimal(amount) > Decimal(bill["amount_due"]):
-        return AgentResponse(
-            verdict="reject", reply="Payment does not match the bill.", audit=h.audit
-        )
+        return _payment_verdict(h, "reject", "bill_mismatch", "Payment does not match the bill.")
 
     recent = await h.call(req, "check_recent_payments", bill_id=bill_id, minutes=10)
     if not recent.get("ok") or recent.get("recent_payments", 1) > 0:
-        return AgentResponse(
-            verdict="reject", reply="A recent payment exists for this bill.", audit=h.audit
+        return _payment_verdict(
+            h, "reject", "recent_payment", "A recent payment exists for this bill."
         )
-    return AgentResponse(verdict="approve", audit=h.audit)
+    return _payment_verdict(h, "approve", "checks_passed")
+
+
+def _payment_verdict(
+    h: Harness, verdict: Literal["approve", "reject"], reason: str, reply: str = ""
+) -> AgentResponse:
+    log.info("payment_checked", verdict=verdict, reason=reason)
+    return AgentResponse(verdict=verdict, reply=reply, audit=h.audit)

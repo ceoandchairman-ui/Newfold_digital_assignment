@@ -16,6 +16,7 @@ class EscalationReason(StrEnum):
     UNKNOWN_BILL_STATUS = "UNKNOWN_BILL_STATUS"
     EVAL_RETRIES_EXHAUSTED = "EVAL_RETRIES_EXHAUSTED"
     INVARIANT_VIOLATION = "INVARIANT_VIOLATION"
+    GUIDANCE_UNAVAILABLE = "GUIDANCE_UNAVAILABLE"  # the retrieval service could not be reached
 
 
 @dataclass(frozen=True)

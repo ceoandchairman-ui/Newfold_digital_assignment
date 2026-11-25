@@ -83,7 +83,13 @@ def build_index_chain(
 
     async def drop_known(inp: dict[str, Any]) -> dict[str, Any]:
         async with pool.connection() as conn:
-            cur = await conn.execute("SELECT content_hash FROM knowledge_base_chunks")
+            # "Already indexed" means this text AND this embedding model: vectors from two models
+            # cannot be compared, so a model change must embed every chunk again.
+            cur = await conn.execute(
+                "SELECT content_hash FROM knowledge_base_chunks"
+                " WHERE embedding_model = %s AND embedding_version = %s",
+                (model, version),
+            )
             known = {r["content_hash"] for r in await cur.fetchall()}
         return {**inp, "fresh": [c for c in inp["chunks"] if c.digest not in known]}
 
@@ -105,7 +111,14 @@ def build_index_chain(
                           (source, section_id, heading_path, content, content_hash,
                            embedding, embedding_model, embedding_version)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (content_hash) DO NOTHING
+                        ON CONFLICT (content_hash) DO UPDATE
+                           SET embedding = EXCLUDED.embedding,
+                               embedding_model = EXCLUDED.embedding_model,
+                               embedding_version = EXCLUDED.embedding_version
+                         WHERE (knowledge_base_chunks.embedding_model,
+                                knowledge_base_chunks.embedding_version)
+                               IS DISTINCT FROM
+                               (EXCLUDED.embedding_model, EXCLUDED.embedding_version)
                         """,
                         (
                             inp["source"],

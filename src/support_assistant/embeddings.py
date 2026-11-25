@@ -13,14 +13,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
 import httpx
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
 
 from support_assistant.errors import ExternalServiceUnavailable, ValidationError
+from support_assistant.resilience import retrying
 
 
 class Embedder(Protocol):
@@ -92,12 +87,8 @@ class HttpEmbedder:
             out.extend(await self._embed_batch(list(texts[i : i + self._batch_size])))
         return out
 
-    @retry(
-        retry=retry_if_exception(_is_retryable),
-        stop=stop_after_attempt(4),
-        wait=wait_exponential_jitter(initial=0.2, max=5.0),
-        reraise=True,
-    )
+    # Embedding has no side effect, so any transient failure may be repeated.
+    @retrying("embed", attempts=4, base=0.2, cap=5.0, retry_on=_is_retryable)
     async def _call(self, batch: list[str]) -> httpx.Response:
         headers = {}
         if self._token_provider is not None:

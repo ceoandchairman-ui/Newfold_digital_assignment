@@ -12,6 +12,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
+from typing import Any
 
 import structlog
 
@@ -19,6 +20,8 @@ from support_assistant import repositories as repo
 from support_assistant.config import Settings, get_settings
 from support_assistant.db import make_pool
 from support_assistant.errors import ExternalServiceUnavailable, SupportError
+from support_assistant.logs import error_fields
+from support_assistant.resilience import backoff_delay
 
 log = structlog.get_logger()
 
@@ -77,9 +80,11 @@ async def handle_message(
                 log.warning("notification_no_email_on_file", customer_id=customer_id)
                 return Outcome.DEAD_LETTER  # nothing to send to; retrying will not help
             await send_email(address, SUBJECTS[template], text)
-    except ExternalServiceUnavailable:
+    except ExternalServiceUnavailable as exc:
+        log.warning("notification_send_failed", will_retry=True, **error_fields(exc))
         return Outcome.RETRY
-    except SupportError:
+    except SupportError as exc:
+        log.warning("notification_send_failed", will_retry=False, **error_fields(exc))
         return Outcome.DEAD_LETTER  # unknown customer etc.; retrying will not help
     log.info("notification_sent", customer_id=customer_id, template=template)
     return Outcome.COMPLETE
@@ -167,6 +172,35 @@ def _email_sender(settings: Settings) -> EmailSender:
     return send
 
 
+RETRY_BASE_S = 2.0
+RETRY_CAP_S = 60.0
+
+
+async def process_batch(
+    receiver: Any, messages: list[Any], handle: Callable[[str], Awaitable[Outcome]]
+) -> bool:
+    """Handle and settle each message. True if any of them has to be retried."""
+    needs_retry = False
+    for m in messages:
+        try:
+            outcome = await handle(str(m))
+        except Exception as exc:  # noqa: BLE001 - e.g. the database: redeliver, keep working
+            log.error("notification_handler_failed", **error_fields(exc))
+            outcome = Outcome.RETRY
+        needs_retry = needs_retry or outcome is Outcome.RETRY
+        try:
+            if outcome is Outcome.COMPLETE:
+                await receiver.complete_message(m)
+            elif outcome is Outcome.DEAD_LETTER:
+                log.warning("notification_dead_lettered")
+                await receiver.dead_letter_message(m, reason="unprocessable")
+            else:
+                await receiver.abandon_message(m)
+        except Exception as exc:  # noqa: BLE001 - a lost message lock: the queue redelivers it
+            log.error("notification_settle_failed", outcome=outcome.value, **error_fields(exc))
+    return needs_retry
+
+
 async def run() -> None:
     from azure.identity.aio import DefaultAzureCredential
     from azure.servicebus.aio import ServiceBusClient
@@ -188,22 +222,32 @@ async def run() -> None:
             email = (await repo.get_customer(conn, customer_id)).get("email")
         return str(email) if email else None
 
+    async def handle(raw: str) -> Outcome:
+        return await handle_message(
+            raw, lookup, sender, lookup_email=lookup_email, send_email=email_sender
+        )
+
     async with (
         DefaultAzureCredential() as cred,
         ServiceBusClient(settings.servicebus_namespace_fqdn, cred) as sb,
     ):
         async with sb.get_queue_receiver("notifications", max_wait_time=30) as receiver:
+            failed_batches = 0
             while True:
-                for m in await receiver.receive_messages(max_message_count=10, max_wait_time=30):
-                    outcome = await handle_message(
-                        str(m), lookup, sender, lookup_email=lookup_email, send_email=email_sender
+                batch = await receiver.receive_messages(max_message_count=10, max_wait_time=30)
+                if await process_batch(receiver, batch, handle):
+                    failed_batches += 1
+                    # Abandoned messages come straight back. Without this pause an outage of a few
+                    # seconds would use up every delivery attempt and dead-letter good messages.
+                    delay = RETRY_BASE_S + backoff_delay(failed_batches, RETRY_BASE_S, RETRY_CAP_S)
+                    log.warning(
+                        "notification_backoff",
+                        failed_batches=failed_batches,
+                        delay_s=round(delay, 1),
                     )
-                    if outcome is Outcome.COMPLETE:
-                        await receiver.complete_message(m)
-                    elif outcome is Outcome.DEAD_LETTER:
-                        await receiver.dead_letter_message(m, reason="unprocessable")
-                    else:
-                        await receiver.abandon_message(m)
+                    await asyncio.sleep(delay)
+                elif batch:
+                    failed_batches = 0
 
 
 if __name__ == "__main__":

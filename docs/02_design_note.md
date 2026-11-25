@@ -24,10 +24,8 @@ flowchart TB
 
   subgraph S2["Stage 2: orchestrator (LangGraph, thin nodes)"]
     G["main graph<br/>auth_gate, support_agent, troubleshoot_agent,<br/>eval_agent, approve, pay, egress<br/>Redis checkpoint, one run per session"]
-    RET["independent retriever, not MCP<br/>pgvector + keyword, optional reranker"]
   end
   BE -- "/invoke, /resume" --> G
-  G --- RET
 
   subgraph AG["Agent services: Microsoft Agent Framework, one harness each"]
     DIR["agent-director = support_agent<br/>CHAT model: route, normal_resp_gen<br/>PLANNER model: instruct_gen, billing_gen"]
@@ -35,7 +33,9 @@ flowchart TB
     EVL["agent-evaluator = eval_agent<br/>payment verdict: plain code, no model<br/>reply check: rules, then JUDGE model"]
   end
   G -- "AgentClient (HTTP)" --> DIR & TRB & EVL
-  RET -. "chunks" .-> DIR & TRB & EVL
+  RET["retrieval service, not MCP<br/>pgvector + keyword, optional reranker<br/>company knowledge only"]
+  DIR & TRB -- "search" --> RET
+  EVL -- "fetch by reference" --> RET
 
   H["harness on every call: verified customer, tool allow-list,<br/>customer id injected from the session, audit"]
   DIR & TRB & EVL --> H
@@ -106,15 +106,14 @@ flowchart TD
   AUTH -- "no" --> DENY["deny<br/>'please verify'"]
   AUTH -- "yes" --> SUPPORT
 
-  subgraph SUPPORT["support_agent: one agent, a subgraph of five nodes (agent-director service)"]
+  subgraph SUPPORT["support_agent: one agent, a subgraph of four nodes (agent-director service)"]
     direction TB
     R["route<br/>CHAT model, validated JSON<br/>NORMAL, INSTRUCT, BILLING or TROUBLESHOOT<br/>unsure or down: keyword hint, else NORMAL"]
     N["normal_resp_gen<br/>CHAT model<br/>generic answers, no account data"]
-    RT1["retrieve<br/>independent retriever, not MCP"]
-    I["instruct_gen<br/>PLANNER model, reasoning<br/>facts: account, bills, contract, past cases,<br/>last days of chats, policy chunks, cites the source"]
+    I["instruct_gen<br/>PLANNER model, reasoning<br/>facts: account, bills, contract, past cases,<br/>last days of chats, searches the retrieval service, cites the source"]
     B["billing_gen<br/>PLANNER model, MCP reads<br/>PROPOSES a payment, never pays,<br/>a proposal carries no free text"]
     R -- "NORMAL" --> N
-    R -- "INSTRUCT" --> RT1 --> I
+    R -- "INSTRUCT" --> I
     R -- "BILLING" --> B
   end
 
@@ -122,9 +121,7 @@ flowchart TD
 
   subgraph TROUBLE["troubleshoot_agent: a subgraph (agent-troubleshooter service)"]
     direction TB
-    RT2["retrieve<br/>independent retriever, lazy"]
-    D["diagnose<br/>TROUBLESHOOTER model<br/>device tool loop: at most 3 checks,<br/>locked SIM escalates, no retry<br/>3 turns at most, then escalate"]
-    RT2 --> D
+    D["diagnose<br/>TROUBLESHOOTER model<br/>searches the retrieval service, lazy<br/>device tool loop: at most 3 checks,<br/>locked SIM escalates, no retry<br/>3 turns at most, then escalate"]
   end
 
   SUPPORT -- "payment proposed" --> EVAL
@@ -132,7 +129,7 @@ flowchart TD
   TROUBLE --> EVAL
   TROUBLE -- "escalated" --> EGRESS
 
-  EVAL["eval_agent (agent-evaluator service)<br/>payment: plain-code verdict (bill exists, not PAID,<br/>amount at most due, no payment in 10 min)<br/>troubleshooting reply: rules (cites the manual),<br/>then JUDGE model checks it against the sources<br/>rejected twice or down: escalate"]
+  EVAL["eval_agent (agent-evaluator service)<br/>payment: plain-code verdict (bill exists, not PAID,<br/>amount at most due, no payment in 10 min)<br/>troubleshooting reply: rules (cites the manual),<br/>fetches the same sources again by reference<br/>(gone or changed: reject), then JUDGE model<br/>rejected twice or down: escalate"]
   EVAL -- "approved payment" --> APPROVE["approve<br/>interrupt(): the graph PAUSES<br/>state kept in redis-checkpoint, 24 h<br/>only boolean true continues"]
   EVAL -- "reply ok, or rejected" --> EGRESS
   APPROVE -- "yes, via /approve then /resume" --> PAY["pay<br/>MCP process_payment<br/>idempotency key session:bill<br/>row lock, read back PAID"]
@@ -145,7 +142,7 @@ flowchart TD
 
 **A payment turn.** The customer asks to pay. `support_agent` routes it BILLING, and `billing_gen` (the PLANNER model) reads the bills through MCP and *proposes* the payment; a proposal carries no free text. `eval_agent` checks it with plain code (bill exists, not paid, amount not above what is due, no payment in the last 10 minutes). The graph **pauses** at `approve`. Only an explicit yes continues to `pay`, which calls the database MCP server's `process_payment`: reserve under a row lock, call the gateway (Stripe, a stub today) with an idempotency key, settle, and read the bill back to confirm `PAID`. The egress filter allows "payment successful" text only because that confirmed read happened.
 
-**A troubleshooting turn.** The router sends it to `troubleshoot_agent`. `retrieve` fetches manual sections (lazily: "thanks" needs no search). `diagnose` may run up to three device checks, one at a time, chosen by the model as validated JSON from the device tools only and only for the customer's own devices. A locked SIM escalates at once. The answer cites the manual. `eval_agent` then checks the rules and asks the JUDGE model whether the reply is supported by the retrieved sections. The judge can only object, and only when it is confident; an outage or a timeout means no objection.
+**A troubleshooting turn.** The router sends it to `troubleshoot_agent`. `diagnose` asks the retrieval service for manual sections (lazily: "thanks" needs no search; if the service is down, a human takes over). It may run up to three device checks, one at a time, chosen by the model as validated JSON from the device tools only and only for the customer's own devices. A locked SIM escalates at once. The answer cites the manual. `eval_agent` then checks the rules, fetches the same sections again from the references the troubleshooter returned (a missing or changed section rejects the reply), and asks the JUDGE model whether the reply is supported by them. The judge can only object, and only when it is confident; an outage or a timeout means no objection.
 
 ## Azure infrastructure
 
@@ -180,6 +177,7 @@ flowchart TB
             OR["orchestrator"]
             AD["agent-director"]
             AT["agent-troubleshooter"]
+            RS["retrieval"]
             AE["agent-evaluator"]
             MCPS["mcp-servers<br/>nine servers :8001 to :8009"]
             NW["notification-worker"]
@@ -271,7 +269,7 @@ There are no passwords or account keys anywhere: Postgres and Redis use Entra to
 | **A payment is reserve, gateway, settle, never one step.** Idempotency key, row lock, partial unique index, read-after-write. A gateway **timeout leaves the attempt `PENDING`**; `reconcile_payment` asks the gateway before any retry. | Releasing the bill on a timeout could double-charge on retry. The assumption "failed" is the dangerous one. | A customer whose payment timed out is blocked until reconciled (they are told not to pay again). |
 | **Graph state and checkpoints live in Redis** (separate clusters for checkpoint, cache and tool cache), not Postgres. | Latency per graph step was the priority. Separate clusters let the checkpoint cluster use `NoEviction` + AOF while caches use LRU. | A paused payment is only as durable as Redis, and its idle TTL (24 h) bounds how long a customer can be away. A full `NoEviction` Redis refuses writes, so it has a memory alert. Losing it loses no money: the gateway is only called after approval. |
 | **Tool access through one registry, over long-lived MCP connections.** The harness decides *whether* a call happens; the registry decides *where*. Writes are never auto-retried. | One place to enforce the allow-list, inject the customer id (the model never supplies it), audit, circuit-break and time out. | The MCP layer is extra machinery for a small tool set. |
-| **The retriever is independent of MCP.** A LangChain retriever called from a graph node feeds the support agent, the troubleshooter and the judge. | Retrieval is a read of our own index, not a tool with side effects, and it should not pay an MCP hop. | Two paths to data (retriever and MCP) to keep consistent. |
+| **Search and reranking are one service**, independent of MCP. The support agent and the troubleshooter search it; the eval_agent fetches the same chunks by reference. The graph keeps references, never chunk text. | One place that reads the search tables and one place to change ranking. Retrieval is a read of our own index, not a tool with side effects, and the model never chooses when to search. | One more service and network hop. If it is down, turns that need guidance go to a human. It serves company knowledge only, and the network policy is its only caller control, until it can verify callers and customers. |
 | **Third-party providers sit behind MCP servers and stubs.** Twilio, Stripe, Gmail and Drive are each a server, every one defaults to a stub, and outbound text is template-only with the recipient taken from the customer's record. | A model can neither choose a recipient nor write an outbound message. The system runs and is tested before any credential exists. | Four servers to keep in the catalog. The real Gmail and Drive providers, and the Stripe customer mapping, are placeholders. |
 | **The LLM judge can only object.** It checks a troubleshooting reply against its retrieved sections, objects only on a confident "unsupported", and never touches a payment. | A model can catch an invented claim that rules cannot. Failing open means it can never take a turn down. | A second model call on troubleshooting turns. A wrong confident objection escalates a good answer. |
 | **Hybrid retrieval** (pgvector + keyword, rank fusion) with an optional reranker, evaluated by a recall/MRR harness. | Exact terms like error codes need keyword search; meaning needs vectors. The reranker is off until the evaluation shows it earns its latency. | Two queries per search. |

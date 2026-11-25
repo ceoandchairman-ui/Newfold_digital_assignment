@@ -21,6 +21,7 @@ DEPLOYMENTS = [
     "agent-director",
     "agent-troubleshooter",
     "agent-evaluator",
+    "retrieval",
     "mcp-servers",
     "notification-worker",
     "index-worker",

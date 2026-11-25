@@ -20,6 +20,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
 
+import structlog
+
 from support_assistant import repositories as repo
 from support_assistant.db import Pool
 from support_assistant.domain.billing import (
@@ -35,6 +37,10 @@ from support_assistant.errors import (
     PaymentDeclined,
     PaymentOutcomeUnknown,
 )
+from support_assistant.logs import error_fields
+from support_assistant.resilience import db_conflict_retry
+
+log = structlog.get_logger()
 
 
 class GatewayOutcome(StrEnum):
@@ -97,6 +103,7 @@ async def pay_bill(
                 if existing["customer_id"] != customer_id or existing["bill_id"] != bill_id:
                     raise ConflictError("idempotency key reused for a different request")
                 if existing["status"] == "SUCCEEDED":
+                    log.info("payment_replayed", transaction_id=existing["id"])
                     return PaymentResult(existing["id"], bill_id, existing["amount"], replayed=True)
                 if existing["status"] == "PENDING":
                     raise PaymentOutcomeUnknown("an earlier attempt is still unresolved")
@@ -113,15 +120,19 @@ async def pay_bill(
                 conn, customer_id, bill_id, amount, "PENDING", idempotency_key
             )
 
+    log.info("payment_reserved", transaction_id=tx_id)
     # ---- Gateway (no locks held) ---------------------------------------------
     try:
         outcome = await gateway.charge(customer_id, amount, idempotency_key)
-    except ExternalServiceUnavailable:
+    except ExternalServiceUnavailable as exc:
+        log.warning("payment_gateway_not_reached", transaction_id=tx_id, **error_fields(exc))
         await _release(pool, bill_id, tx_id)  # never reached the gateway: safe to give up
         raise
-    except PaymentOutcomeUnknown:
+    except PaymentOutcomeUnknown as exc:
+        log.error("payment_outcome_unknown", transaction_id=tx_id, **error_fields(exc))
         raise  # leave PENDING / AWAITING_PAYMENT for reconcile_payment
 
+    log.info("payment_gateway_answered", transaction_id=tx_id, outcome=outcome.value)
     if outcome is GatewayOutcome.DECLINED:
         await _release(pool, bill_id, tx_id)
         raise PaymentDeclined("gateway declined")
@@ -145,20 +156,31 @@ async def reconcile_payment(
         return None
 
     outcome = await gateway.lookup(idempotency_key)
+    log.info(
+        "payment_reconciled",
+        transaction_id=tx["id"],
+        outcome=outcome.value if outcome else "never_received",
+    )
     if outcome is GatewayOutcome.APPROVED:
         return await _settle(pool, customer_id, tx["bill_id"], tx["id"], tx["amount"])
     await _release(pool, tx["bill_id"], tx["id"])  # declined, or the gateway never received it
     return None
 
 
-async def _settle(
-    pool: Pool, customer_id: str, bill_id: str, tx_id: int, amount: Decimal
-) -> PaymentResult:
+@db_conflict_retry
+async def _commit_settlement(pool: Pool, customer_id: str, bill_id: str, tx_id: int) -> None:
     async with pool.connection() as conn:
         async with conn.transaction():
             await repo.lock_bill(conn, customer_id, bill_id)
             await repo.set_transaction_status(conn, tx_id, "SUCCEEDED")
             await repo.set_bill_status(conn, bill_id, BillStatus.PAID)
+
+
+async def _settle(
+    pool: Pool, customer_id: str, bill_id: str, tx_id: int, amount: Decimal
+) -> PaymentResult:
+    await _commit_settlement(pool, customer_id, bill_id, tx_id)
+    log.info("payment_settled", transaction_id=tx_id)
     async with pool.connection() as conn:  # read-after-write verification
         verified = await repo.get_bill(conn, customer_id, bill_id)
     if parse_status(verified["status"]) is not BillStatus.PAID:
@@ -166,6 +188,7 @@ async def _settle(
     return PaymentResult(tx_id, bill_id, amount)
 
 
+@db_conflict_retry
 async def _release(pool: Pool, bill_id: str, tx_id: int) -> None:
     async with pool.connection() as conn:
         async with conn.transaction():

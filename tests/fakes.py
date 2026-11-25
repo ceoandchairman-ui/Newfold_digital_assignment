@@ -10,9 +10,54 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 
-from support_assistant.errors import NotFoundError, SupportError, to_customer_message
+from support_assistant.contracts import Evidence, EvidenceRef, FetchResponse
+from support_assistant.errors import (
+    ExternalServiceUnavailable,
+    NotFoundError,
+    SupportError,
+    to_customer_message,
+)
 from support_assistant.services import payments
 from support_assistant.services.gateway_sim import SimulatedGateway
+
+
+def evidence(i: int, section_id: str, heading_path: str, content: str) -> Evidence:
+    return Evidence(
+        ref=EvidenceRef(store="company_knowledge", id=i, content_hash=f"hash-{i}"),
+        section_id=section_id,
+        heading_path=heading_path,
+        content=content,
+    )
+
+
+class FakeRetrieval:
+    """The retrieval service in memory. `chunks` are (section_id, heading_path, content)."""
+
+    def __init__(self, *chunks: tuple[str, str, str], down: bool = False) -> None:
+        self.items = [evidence(i, *c) for i, c in enumerate(chunks, start=1)]
+        self.down = down
+        self.seen: list[str] = []
+        self.fetched: list[list[int]] = []
+
+    async def search(self, query: str, top_k: int = 5) -> list[Evidence]:
+        self.seen.append(query)
+        if self.down:
+            raise ExternalServiceUnavailable("retrieval down")
+        return self.items[:top_k]
+
+    async def fetch(self, refs) -> FetchResponse:
+        self.fetched.append([r.id for r in refs])
+        if self.down:
+            raise ExternalServiceUnavailable("retrieval down")
+        by_id = {e.ref.id: e for e in self.items}
+        out = FetchResponse()
+        for ref in refs:
+            found = by_id.get(ref.id)
+            if found is None or found.ref.content_hash != ref.content_hash:
+                out.missing.append(ref)
+            else:
+                out.results.append(found)
+        return out
 
 
 class FakeConn:

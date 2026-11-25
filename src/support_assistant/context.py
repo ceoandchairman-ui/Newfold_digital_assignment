@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from support_assistant.guards import clean_untrusted, looks_like_injection
+
 Message = dict[str, Any]
 
 
@@ -25,6 +27,63 @@ def compact_history(
     while out and total > max_chars and len(out) > len(recent):
         total -= len(str(out.pop(0).get("content", "")))  # drop the oldest summarised turn first
     return out
+
+
+# --- the history a model is shown ----------------------------------------------------------------
+HISTORY_MAX_MESSAGES = 8  # the most recent user and assistant messages
+HISTORY_MESSAGE_CHARS = 500  # each one is cut to this
+HISTORY_MAX_CHARS = 3000  # all of them together; whole messages are dropped, oldest first
+NOTES_MAX_CHARS = 1200  # memory notes the backend added (past episodes, recent conversations)
+
+_SPEAKERS = {"user": "Customer", "assistant": "Assistant"}
+
+
+def _safe_text(value: Any, limit: int) -> str:
+    """Old text is as untrusted as new text: cleaned, capped, and unable to close its own block."""
+    text = clean_untrusted(str(value), limit).replace("<<<", "").replace(">>>", "")
+    return "" if looks_like_injection(text) else text.strip()
+
+
+def history_for_model(messages: list[Message]) -> str:
+    """What came before the latest customer message, trimmed to a fixed size. Empty if nothing did.
+
+    The agents receive `compact_history`'s output, whose newest messages are not length capped, so
+    the limits here are what actually bound the prompt. Newest messages win. A message that tries to
+    instruct the model is left out.
+    """
+    last_user = next(
+        (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), None
+    )
+    if last_user is None:
+        return ""
+    earlier = messages[:last_user]
+
+    notes = [
+        _safe_text(m.get("content", ""), NOTES_MAX_CHARS)
+        for m in earlier
+        if m.get("role") == "system"
+    ]
+    note_block = "\n".join(n for n in notes if n)[:NOTES_MAX_CHARS]
+
+    kept: list[tuple[str, str]] = []
+    total = 0
+    for m in reversed([m for m in earlier if m.get("role") in _SPEAKERS]):
+        text = _safe_text(m.get("content", ""), HISTORY_MESSAGE_CHARS)
+        if not text:
+            continue
+        role = str(m["role"])
+        line = f"{_SPEAKERS[role]}: {text}"
+        if len(kept) == HISTORY_MAX_MESSAGES or total + len(line) > HISTORY_MAX_CHARS:
+            break
+        kept.append((role, line))
+        total += len(line)
+    kept.reverse()
+    while kept and kept[0][0] == "assistant":  # an answer without its question misleads
+        kept.pop(0)
+
+    parts = [note_block] if note_block else []
+    parts += [line for _, line in kept]
+    return "\n".join(parts)
 
 
 def episode_context(episodes: list[dict[str, str]], max_items: int = 3) -> str:

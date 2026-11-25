@@ -11,6 +11,7 @@ WHERE it goes. Tools are only ever reached through the registry.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import structlog
@@ -18,6 +19,7 @@ import structlog
 from support_assistant.agents.mcp_client import ToolRegistry
 from support_assistant.contracts import AgentRequest
 from support_assistant.errors import AuthenticationError, AuthorizationError
+from support_assistant.logs import error_fields
 from support_assistant.observability import TOOL_CALLS
 
 log = structlog.get_logger()
@@ -37,12 +39,23 @@ class Harness:
     async def call(self, req: AgentRequest, tool: str, **args: Any) -> dict[str, Any]:
         self.require_verified(req)
         if tool not in self._allowed or not self._registry.has(tool):
+            log.warning("tool_not_allowed", agent=self.agent, tool=tool, session_id=req.session_id)
             raise AuthorizationError(f"{self.agent} may not call {tool}")
         args["customer_id"] = req.customer_id  # identity from state, overriding the model's value
-        result = await self._registry.call(tool, args)
+        started = time.perf_counter()
+        try:
+            result = await self._registry.call(tool, args)
+        except Exception as exc:
+            log.error("tool_call_failed", agent=self.agent, tool=tool, **error_fields(exc))
+            raise
         ok = bool(result.get("ok"))
         entry = {"agent": self.agent, "tool": tool, "ok": ok}
         self.audit.append(entry)
         TOOL_CALLS.add(1, {"agent": self.agent, "tool": tool, "ok": ok})
-        log.info("tool_call", session_id=req.session_id, **entry)
+        log.info(
+            "tool_call",
+            session_id=req.session_id,
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            **entry,
+        )
         return result

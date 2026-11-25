@@ -25,7 +25,7 @@ async def test_smoke_passes_only_when_every_service_answers_200():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         results = await check_endpoints(http)
     failed = [r.name for r in results if not r.ok]
-    assert failed == ["agent-evaluator"] and len(results) == 5
+    assert failed == ["agent-evaluator"] and len(results) == 6
 
 
 async def test_smoke_journey_needs_a_real_reply():

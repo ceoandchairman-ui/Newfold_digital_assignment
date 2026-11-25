@@ -13,6 +13,7 @@ from typing import Any
 import structlog
 
 from support_assistant.errors import SupportError, to_customer_message
+from support_assistant.logs import error_fields
 
 log = structlog.get_logger()
 
@@ -32,8 +33,11 @@ def mask_email(email: str | None) -> str | None:
 
 def safe(exc: Exception) -> dict[str, Any]:
     """Turn any exception into a customer-safe tool result. Unexpected errors are logged, not shown."""
-    if not isinstance(exc, SupportError):
-        log.exception("tool_failed")
+    if isinstance(exc, SupportError):
+        emit = log.warning if exc.http_status >= 500 else log.info
+        emit("tool_refused", **{"error.code": exc.code}, **error_fields(exc))
+    else:
+        log.error("tool_failed", exc_info=exc)
     return {
         "ok": False,
         "error": getattr(exc, "code", "internal_error"),

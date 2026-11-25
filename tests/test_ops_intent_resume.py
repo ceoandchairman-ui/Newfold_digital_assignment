@@ -69,7 +69,7 @@ class Replying:
     def __init__(self, text: str, fail: bool = False):
         self.text, self.fail = text, fail
 
-    async def respond(self, instructions, facts, user_message):
+    async def respond(self, instructions, facts, user_message, history=""):
         if self.fail:
             raise RuntimeError("model down")
         return self.text

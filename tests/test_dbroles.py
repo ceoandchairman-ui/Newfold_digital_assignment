@@ -24,7 +24,7 @@ def _joined(workload: str) -> str:
 
 
 def test_the_agents_without_database_access_get_nothing():
-    for workload in ("agent-director", "agent-evaluator", "db-bootstrap"):
+    for workload in ("agent-director", "agent-troubleshooter", "agent-evaluator", "db-bootstrap"):
         stmts = dbroles.grant_statements(f"id-x-{workload}", workload)
         assert all(s.startswith("REVOKE") for s in stmts)  # wiped, nothing granted
 
@@ -43,8 +43,8 @@ def test_only_the_mcp_servers_can_change_the_ledger():
     assert "DELETE" not in mcp  # the ledger is never deleted from
 
 
-def test_the_troubleshooter_can_only_read_the_manual():
-    text = _joined("agent-troubleshooter")
+def test_the_retrieval_service_can_only_read_the_manual():
+    text = _joined("retrieval")
     assert (
         'GRANT SELECT ON "knowledge_base_chunks"' in text
         and "INSERT" not in text
@@ -69,7 +69,7 @@ def test_a_role_that_writes_also_gets_the_sequences_and_a_reader_does_not():
         "ALL SEQUENCES IN SCHEMA public TO"
         in _joined("fat-backend").split("REVOKE ALL ON ALL SEQUENCES")[1].split(" | ", 1)[1]
     )
-    assert "GRANT USAGE" not in _joined("agent-troubleshooter")
+    assert "GRANT USAGE" not in _joined("retrieval")
 
 
 def test_every_grant_starts_by_revoking_so_removed_access_does_not_linger():
@@ -142,8 +142,8 @@ async def test_missing_roles_are_created_with_their_object_id_and_existing_ones_
 
 
 async def test_grants_are_applied_for_every_role_even_when_it_already_exists():
-    pool = Pool(existing={"id-support-dev-agent-troubleshooter"})
-    await dbroles.apply_roles(pool, "support-dev", {"agent-troubleshooter": "oid"})
+    pool = Pool(existing={"id-support-dev-retrieval"})
+    await dbroles.apply_roles(pool, "support-dev", {"retrieval": "oid"})
     sqls = [sql for sql, _ in pool.log]
     assert any(s.startswith("GRANT SELECT ON") for s in sqls) and any(
         s.startswith("REVOKE ALL ON ALL TABLES") for s in sqls

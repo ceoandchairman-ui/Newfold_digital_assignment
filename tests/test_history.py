@@ -87,6 +87,7 @@ def _setup(pool, history=(), **settings):
             200, json={"reply": "ok", "pending_approval": None, "escalated": False}
         )
 
+    settings.setdefault("min_session_id_length", 0)  # these tests use short session ids on purpose
     backend.app.state.s = Settings(database_url="postgresql://x", redis_url="redis://x", **settings)
     backend.app.state.redis, backend.app.state.pool = KV(), pool
     backend.app.state.memory, backend.app.state.rewrite = Memory(list(history)), None

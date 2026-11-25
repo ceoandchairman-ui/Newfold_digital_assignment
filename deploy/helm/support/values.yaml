@@ -43,6 +43,12 @@ services:
     replicas: 2
     clientId: ""
     objectId: ""   # terraform output workload_principal_ids
+  retrieval:    # search + reranker: the only answer-time reader of the knowledge base
+    command: ["uvicorn", "support_assistant.retrieval_service.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: [8000]
+    replicas: 2
+    clientId: ""
+    objectId: ""   # terraform output workload_principal_ids
   notification-worker:
     command: ["python", "-m", "support_assistant.worker"]
     ports: []
@@ -70,6 +76,8 @@ allowedCallers:
   agent-director: [orchestrator]
   agent-troubleshooter: [orchestrator]
   agent-evaluator: [orchestrator]
+  # The service does not authenticate callers itself, so this list is what protects it.
+  retrieval: [agent-director, agent-troubleshooter, agent-evaluator]
   mcp-servers: [agent-director, agent-troubleshooter, agent-evaluator, orchestrator]
 
 resources:

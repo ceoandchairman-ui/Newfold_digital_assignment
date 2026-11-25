@@ -7,9 +7,11 @@ identity, tool allow-list and model deployment. Stateless: all state arrives in 
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI, HTTPException
 
 from support_assistant.agents import roles
@@ -24,18 +26,17 @@ from support_assistant.agents.llm import build_role_llm, build_support_llms
 from support_assistant.agents.mcp_client import McpRegistry, ToolRegistry
 from support_assistant.config import get_settings
 from support_assistant.contracts import AgentRequest, AgentResponse
-from support_assistant.db import make_pool
-from support_assistant.embeddings import HttpEmbedder
 from support_assistant.errors import SupportError
+from support_assistant.logs import conversation
 from support_assistant.mcp_catalog import server_urls
 from support_assistant.models import Role
 from support_assistant.observability import RequestContextMiddleware
 from support_assistant.redis_factory import make_redis
-from support_assistant.reranker import HttpReranker
-from support_assistant.services.retrieval import Chunk, search_kb
+from support_assistant.retrieval_client import HttpRetrievalClient
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
 from support_assistant.tool_cache import CachingRegistry, ToolResultCache
 
+log = structlog.get_logger()
 AGENT = os.environ.get("AGENT", "director")
 ALLOWED = roles.ALLOWED_TOOLS
 
@@ -87,33 +88,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.route_classifier = (
         LlmRouteClassifier(app.state.llms["route"]) if modelled else KeywordRouteClassifier()
     )
-    app.state.pool = None
-    if AGENT == "troubleshooter":
-        pool = make_pool(settings)
-        await pool.open()
-        app.state.pool = pool
-        base = settings.embedder_url
-        app.state.reranker = (
-            HttpReranker(
-                settings.reranker_url,
-                settings.reranker_model,
-                os.environ.get("EMBEDDER_API_KEY", ""),
-            )
-            if settings.rerank_enabled and settings.reranker_url
-            else None
-        )
-        key = os.environ.get("EMBEDDER_API_KEY", "")
-
-        async def token() -> str:
-            return key
-
-        app.state.embedder = HttpEmbedder(
-            base, settings.embedding_model, dim=settings.embedding_dim, token_provider=token
-        )
+    # Search and reranking live in the retrieval service; no agent reads the search tables itself.
+    retrieval = HttpRetrievalClient(settings.retrieval_url, settings.retrieval_timeout_seconds)
+    app.state.retrieval = retrieval
     yield
     await mcp.aclose()
-    if app.state.pool is not None:
-        await app.state.pool.close()
+    await retrieval.aclose()
     if app.state.tool_redis is not None:
         await app.state.tool_redis.aclose()
 
@@ -139,6 +119,28 @@ async def readyz() -> dict[str, object]:
 
 @app.post("/run", response_model=AgentResponse)
 async def run(req: AgentRequest) -> AgentResponse:
+    turn = str(req.context.get("turn_id") or "") or None
+    mode = str(req.context.get("mode", "-"))
+    with conversation(req.session_id, req.customer_id, turn):
+        started = time.perf_counter()
+        try:
+            res = await _dispatch(req)
+        except HTTPException as exc:
+            log.warning("agent_run_refused", agent=AGENT, mode=mode, status=exc.status_code)
+            raise
+        log.info(
+            "agent_run_completed",
+            agent=AGENT,
+            mode=mode,
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            escalated=res.escalate,
+            verdict=res.verdict,
+            tool_calls=len(res.audit),
+        )
+        return res
+
+
+async def _dispatch(req: AgentRequest) -> AgentResponse:
     harness = Harness(AGENT, ALLOWED[AGENT], app.state.registry)  # fresh audit trail per request
     try:
         if AGENT == "director":
@@ -148,7 +150,9 @@ async def run(req: AgentRequest) -> AgentResponse:
             if mode == "normal":
                 return await roles.normal_resp_gen(req, harness, app.state.llms["normal"])
             if mode == "instruct":
-                return await roles.instruct_gen(req, harness, app.state.llms["instruct"])
+                return await roles.instruct_gen(
+                    req, harness, app.state.llms["instruct"], app.state.retrieval
+                )
             return await roles.billing_gen(
                 req,
                 harness,
@@ -161,22 +165,14 @@ async def run(req: AgentRequest) -> AgentResponse:
                 harness,
                 judge=app.state.judge,
                 judge_timeout_s=app.state.settings.judge_timeout_seconds,
-            )
-
-        async def search(q: str) -> list[Chunk]:
-            return await search_kb(
-                app.state.pool,
-                app.state.embedder,
-                q,
-                candidates=app.state.settings.rerank_candidates,
-                reranker=app.state.reranker,
+                retrieval=app.state.retrieval,
             )
 
         return await roles.troubleshooter(
             req,
             harness,
             app.state.llm,
-            search,
+            app.state.retrieval,
             tool_steps=app.state.settings.troubleshooter_tool_steps,
         )
     except SupportError as exc:

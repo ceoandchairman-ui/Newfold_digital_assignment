@@ -30,7 +30,7 @@ spec:
         spec:
           serviceAccountName: indexer
           restartPolicy: Never
-          securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+          securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
           containers:
             - name: indexer
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -46,7 +46,7 @@ spec:
                 {{- end }}
                 - { name: DATABASE_ENTRA_USER, value: "id-{{ .Values.identityPrefix }}-indexer" }
               resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
-              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
               volumeMounts:
                 - { name: tmp, mountPath: /tmp }
                 - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }

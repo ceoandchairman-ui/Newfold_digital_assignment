@@ -3,11 +3,12 @@ the harness, a locked SIM escalates with no retry, and a broken loop never costs
 
 import json
 
+from fakes import FakeRetrieval
 from support_assistant.agents import roles
 from support_assistant.agents.harness import Harness
 from support_assistant.contracts import AgentRequest
 
-CHUNKS = [{"section_id": "4", "heading_path": "Guide > APN", "content": "Reset the APN settings."}]
+CHUNK = ("4", "Guide > APN", "Reset the APN settings.")
 
 
 class Registry:
@@ -36,7 +37,7 @@ class ScriptedLLM:
     def __init__(self, *actions):
         self.actions, self.answers, self.router_calls = list(actions), [], 0
 
-    async def respond(self, instructions, facts, user_message):
+    async def respond(self, instructions, facts, user_message, history=""):
         if instructions == roles.TOOL_ROUTER_INSTRUCTIONS:
             self.router_calls += 1
             nxt = self.actions.pop(0) if self.actions else '{"tool": null}'
@@ -51,17 +52,12 @@ def _req(msg="my data does not work") -> AgentRequest:
         session_id="S",
         identity_verified=True,
         messages=[{"role": "user", "content": msg}],
-        context={"kb_chunks": CHUNKS},
     )
 
 
 def _run(llm, reg, steps=3):
     h = Harness("troubleshooter", roles.TROUBLESHOOTER_TOOLS, reg)
-
-    async def search(_):
-        return []
-
-    return roles.troubleshooter(_req(), h, llm, search, tool_steps=steps)
+    return roles.troubleshooter(_req(), h, llm, FakeRetrieval(CHUNK), tool_steps=steps)
 
 
 async def test_it_checks_the_device_first_then_answers_with_what_it_found():

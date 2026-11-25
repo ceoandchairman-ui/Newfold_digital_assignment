@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from redis.asyncio import Redis
 
 from support_assistant.db import Pool
+from support_assistant.resilience import db_conflict_retry
 
 log = structlog.get_logger()
 
@@ -49,27 +50,47 @@ class SessionMemory:
         return messages
 
     async def append(self, customer_id: str, session_id: str, new: list[Message]) -> list[Message]:
+        messages = await self._append_row(customer_id, session_id, new)
+        window = messages[-self._window :]
+        await self._cache(self._key(customer_id, session_id), window)
+        return window
+
+    @db_conflict_retry
+    async def _append_row(
+        self, customer_id: str, session_id: str, new: list[Message]
+    ) -> list[Message]:
+        """Read, extend and write one session's messages in ONE transaction.
+
+        The row is created first because `SELECT ... FOR UPDATE` locks nothing when the row does
+        not exist: two first writes would both read "empty", and one would overwrite the other.
+        Once the row exists, the second writer waits on the lock and then sees the first one's
+        messages.
+        """
         async with self._pool.connection() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO session_conversations (session_id, customer_id, messages, updated_at)
+                    VALUES (%s, %s, '[]'::jsonb, now())
+                    ON CONFLICT (session_id) DO NOTHING
+                    """,
+                    (session_id, customer_id),
+                )
                 cur = await conn.execute(
                     "SELECT messages FROM session_conversations WHERE session_id = %s AND customer_id = %s FOR UPDATE",
                     (session_id, customer_id),
                 )
                 row = await cur.fetchone()
-                messages = [*(row["messages"] if row else []), *new]
+                messages: list[Message] = [*(row["messages"] if row else []), *new]
+                # Filtered by customer: another customer's session id changes nothing.
                 await conn.execute(
                     """
-                    INSERT INTO session_conversations (session_id, customer_id, messages, updated_at)
-                    VALUES (%s, %s, %s, now())
-                    ON CONFLICT (session_id) DO UPDATE
-                       SET messages = EXCLUDED.messages, updated_at = now()
-                     WHERE session_conversations.customer_id = EXCLUDED.customer_id
+                    UPDATE session_conversations SET messages = %s, updated_at = now()
+                     WHERE session_id = %s AND customer_id = %s
                     """,
-                    (session_id, customer_id, Jsonb(messages)),
+                    (Jsonb(messages), session_id, customer_id),
                 )
-        window = messages[-self._window :]
-        await self._cache(self._key(customer_id, session_id), window)
-        return window
+        return messages
 
     async def _cache(self, key: str, messages: list[Message]) -> None:
         try:

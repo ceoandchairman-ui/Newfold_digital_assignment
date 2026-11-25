@@ -17,6 +17,7 @@ from support_assistant.embeddings_lc import LcEmbeddings
 from support_assistant.errors import ConflictError, DuplicateOperation, NotFoundError
 from support_assistant.governance import erase_customer_memory, prune_sessions
 from support_assistant.indexer import build_index_chain
+from support_assistant.memory import SessionMemory
 from support_assistant.seed import load_seed, parse_seed
 from support_assistant.services import episodes, payments
 from support_assistant.services.retrieval import search_kb
@@ -24,6 +25,29 @@ from support_assistant.services.retrieval import search_kb
 from .conftest import EMBEDDING_DIM, ROOT, needs_db
 
 pytestmark = needs_db
+
+
+# --- concurrent first writes (the lost update memory.py guards against) ------------------------------
+class _NoCache:
+    async def set(self, *a, **k):
+        return None
+
+
+async def test_many_first_writes_to_one_session_lose_no_message(seeded):
+    memory = SessionMemory(seeded, _NoCache(), window=100, ttl_s=60)
+    await asyncio.gather(
+        *(
+            memory.append("C1001", "concurrent-first", [{"role": "user", "content": str(i)}])
+            for i in range(8)
+        )
+    )
+    async with seeded.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT messages FROM session_conversations WHERE session_id = 'concurrent-first'"
+            )
+        ).fetchone()
+    assert sorted(m["content"] for m in row["messages"]) == [str(i) for i in range(8)]
 
 
 # --- schema and seed ----------------------------------------------------------------------------------

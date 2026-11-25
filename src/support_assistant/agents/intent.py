@@ -11,10 +11,14 @@ from __future__ import annotations
 import json
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field, ValidationError
+import structlog
+from pydantic import BaseModel, Field
 
 from support_assistant.agents.llm import LLM
 from support_assistant.contracts import Route
+from support_assistant.logs import error_fields
+
+log = structlog.get_logger()
 
 IntentKind = Literal["account", "billing", "payment", "other"]
 
@@ -58,7 +62,7 @@ class RouteDecision(BaseModel):
 
 
 class RouteClassifier(Protocol):
-    async def classify(self, text: str) -> RouteDecision: ...
+    async def classify(self, text: str, history: str = "") -> RouteDecision: ...
 
 
 ROUTE_INSTRUCTIONS = (
@@ -69,7 +73,8 @@ ROUTE_INSTRUCTIONS = (
     "INSTRUCT = questions that need reasoning over policy or the customer's situation: why was I "
     "charged, disputes, refunds, cancellations, contract or roaming rules, what happens if. "
     "BILLING = plan, usage, bills, balance, paying a bill, suspension. "
-    "TROUBLESHOOT = a device or service problem: no signal, slow data, cannot connect, SIM, APN, MMS."
+    "TROUBLESHOOT = a device or service problem: no signal, slow data, cannot connect, SIM, APN, MMS. "
+    "Route the LATEST message; use earlier conversation only to see what it refers to."
 )
 
 # Deterministic fallback. Order matters: a stated problem beats a keyword that is also a topic, so
@@ -90,9 +95,10 @@ _BILLING = (
 
 
 class KeywordRouteClassifier:
-    """Deterministic fallback, also used when no model is configured."""
+    """Deterministic fallback, also used when no model is configured. It reads only the latest
+    message: an old keyword must not decide the route."""
 
-    async def classify(self, text: str) -> RouteDecision:
+    async def classify(self, text: str, history: str = "") -> RouteDecision:
         low = f" {text.lower()} "
         if any(w in low for w in _FAULT):
             return RouteDecision(route="TROUBLESHOOT", confidence=0.6)
@@ -114,14 +120,23 @@ class LlmRouteClassifier:
         self._fallback = fallback or KeywordRouteClassifier()
         self._min = min_confidence
 
-    async def classify(self, text: str) -> RouteDecision:
+    async def classify(self, text: str, history: str = "") -> RouteDecision:
         try:
-            raw = await self._llm.respond(ROUTE_INSTRUCTIONS, "", text)
+            raw = await self._llm.respond(ROUTE_INSTRUCTIONS, "", text, history)
             start, end = raw.find("{"), raw.rfind("}")
             decision = RouteDecision.model_validate(json.loads(raw[start : end + 1]))
-        except Exception:  # noqa: BLE001 - any failure: fall back
+        except Exception as exc:  # noqa: BLE001 - any failure: fall back
+            log.warning(
+                "classifier_fallback", classifier="route", reason="error", **error_fields(exc)
+            )
             return await self._fallback.classify(text)
         if decision.confidence < self._min:
+            log.info(
+                "classifier_fallback",
+                classifier="route",
+                reason="low_confidence",
+                confidence=decision.confidence,
+            )
             return await self._fallback.classify(text)
         return decision
 
@@ -142,8 +157,17 @@ class LlmIntentClassifier:
             raw = await self._llm.respond(CLASSIFY_INSTRUCTIONS, "", text)
             start, end = raw.find("{"), raw.rfind("}")
             intent = Intent.model_validate(json.loads(raw[start : end + 1]))
-        except (ValidationError, ValueError, Exception):  # noqa: BLE001 - any failure: fall back
+        except Exception as exc:  # noqa: BLE001 - any failure: fall back
+            log.warning(
+                "classifier_fallback", classifier="intent", reason="error", **error_fields(exc)
+            )
             return await self._fallback.classify(text)
         if intent.confidence < self._min:
+            log.info(
+                "classifier_fallback",
+                classifier="intent",
+                reason="low_confidence",
+                confidence=intent.confidence,
+            )
             return await self._fallback.classify(text)
         return intent

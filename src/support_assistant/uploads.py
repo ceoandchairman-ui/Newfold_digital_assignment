@@ -241,7 +241,7 @@ class UploadService:
             try:
                 await self._blobs.delete(r["blob_name"])
             except NotFoundError:
-                pass  # already expired or removed by the scanner
+                log.info("upload_blob_already_gone")  # expired or removed by the scanner
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute(

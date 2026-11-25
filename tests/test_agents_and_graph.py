@@ -156,7 +156,9 @@ async def test_payment_waits_for_approval_then_pays():
 
     out = await graph.ainvoke(Command(resume={"approved": True}), cfg)
     assert len(paid) == 1 and "successful" in out["reply"]
-    assert paid[0][3] == "S1:B1"  # stable idempotency key
+    # session, bill and the id of THIS proposal: stable on replay, new for a new proposal
+    session, bill, proposal_id = paid[0][3].split(":")
+    assert (session, bill, len(proposal_id)) == ("S1", "B1", 32)
 
 
 async def test_declined_confirmation_does_not_pay():

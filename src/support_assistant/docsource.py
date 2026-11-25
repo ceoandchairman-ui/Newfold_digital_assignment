@@ -43,7 +43,8 @@ def _decode(name: str, raw: bytes, out: LoadedDocs) -> None:
         return
     try:
         out.documents[name] = raw.decode("utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
+        log.warning("document_undecodable", **{"error.type": type(exc).__name__})
         out.skipped[name] = "not valid UTF-8 text"
 
 

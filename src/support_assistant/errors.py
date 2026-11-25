@@ -46,6 +46,27 @@ class ExternalServiceUnavailable(SupportError):
     customer_message = "That service is temporarily unavailable. Nothing has been changed. Please try again shortly."
 
 
+class RateLimited(SupportError):
+    """Too many attempts. The caller is told how long to wait, and nothing about why."""
+
+    code = "rate_limited"
+    http_status = 429
+    customer_message = "Too many attempts. Please wait a moment and try again."
+
+    def __init__(self, retry_after: int = 60) -> None:
+        super().__init__("rate limited")
+        self.retry_after = max(1, int(retry_after))
+
+
+class Overloaded(SupportError):
+    """This pod is at its concurrency limit. Shedding load is kinder than queueing until timeout."""
+
+    code = "overloaded"
+    http_status = 503
+    customer_message = "We are very busy right now. Please try again in a moment."
+    retry_after = 5
+
+
 class PaymentDeclined(SupportError):
     code = "payment_declined"
     http_status = 402

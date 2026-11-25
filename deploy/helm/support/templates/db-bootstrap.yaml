@@ -36,7 +36,7 @@ spec:
     spec:
       serviceAccountName: db-bootstrap
       restartPolicy: Never
-      securityContext: { runAsNonRoot: true, runAsUser: 10001 }
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -54,7 +54,7 @@ spec:
             - name: DB_PRINCIPALS
               value: "{{- $all := merge (deepCopy .Values.services) (deepCopy .Values.jobIdentities) -}}{{- $first := true -}}{{- range $name, $svc := $all -}}{{- if $svc.objectId -}}{{- if not $first }},{{ end -}}{{ $name }}={{ $svc.objectId }}{{- $first = false -}}{{- end -}}{{- end -}}"
           resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }
-          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
             - { name: secrets-store, mountPath: /mnt/secrets, readOnly: true }

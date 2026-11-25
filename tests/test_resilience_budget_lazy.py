@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from fakes import FakeRetrieval
 from support_assistant.agents import roles
 from support_assistant.agents.harness import Harness
 from support_assistant.agents.llm import TemplateLLM
@@ -27,7 +28,6 @@ from support_assistant.mcp_catalog import (
     DEVICE,
     WRITE_TOOLS,
 )
-from support_assistant.services.retrieval import Chunk
 
 
 # --- connection: writes are never retried, calls time out ------------------------------------------
@@ -195,27 +195,20 @@ def _req(text: str, **ctx: Any) -> AgentRequest:
 
 
 async def test_an_acknowledgement_gets_a_closing_reply_without_any_search():
-    searched: list[str] = []
-
-    async def search(q: str) -> list[Chunk]:
-        searched.append(q)
-        return []
-
+    retrieval = FakeRetrieval()
     h = Harness("troubleshooter", roles.TROUBLESHOOTER_TOOLS, StaticRegistry({}))
-    res = await roles.troubleshooter(_req("thanks!"), h, TemplateLLM(), search)
-    assert res.reply == CLOSING_REPLY and searched == [] and not res.escalate
+    res = await roles.troubleshooter(_req("thanks!"), h, TemplateLLM(), retrieval)
+    assert res.reply == CLOSING_REPLY and retrieval.seen == [] and not res.escalate
 
 
 async def test_troubleshooting_answers_cite_their_manual_sections():
-    async def search(q: str) -> list[Chunk]:
-        return [
-            Chunk(1, "4.2", "Guide > Data > APN", "Reset the APN settings.", 0.1),
-            Chunk(2, "4.3", "Guide > Data > APN", "Restart afterwards.", 0.09),
-            Chunk(3, "2.1", "Guide > Signal", "Toggle airplane mode.", 0.08),
-        ]
-
+    retrieval = FakeRetrieval(
+        ("4.2", "Guide > Data > APN", "Reset the APN settings."),
+        ("4.3", "Guide > Data > APN", "Restart afterwards."),
+        ("2.1", "Guide > Signal", "Toggle airplane mode."),
+    )
     h = Harness("troubleshooter", roles.TROUBLESHOOTER_TOOLS, StaticRegistry({}))
-    res = await roles.troubleshooter(_req("my data fails"), h, TemplateLLM(), search)
+    res = await roles.troubleshooter(_req("my data fails"), h, TemplateLLM(), retrieval)
     assert res.reply.endswith("Source: Guide > Data > APN; Guide > Signal")  # deduplicated, max 2
 
 

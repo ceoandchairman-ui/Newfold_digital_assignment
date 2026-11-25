@@ -11,6 +11,14 @@ resource "azurerm_role_assignment" "csi_kv_secrets_user" {
   principal_id         = azurerm_kubernetes_cluster.main.key_vault_secrets_provider[0].secret_identity[0].object_id
 }
 
+# The key that hashes session and customer ids in logs (logs.py). Every service must use the same
+# one, or the same conversation could not be followed across them. Changing it breaks the link
+# between older and newer log lines. Like any generated secret, it is also held in Terraform state.
+resource "random_password" "log_hash_key" {
+  length  = 48
+  special = false
+}
+
 # --- Secrets, created through the ARM control plane ----------------------------------------------
 # The vault has no public network access, so a CI runner cannot reach its data plane. The ARM
 # secrets resource works without it. The deploying identity needs "Key Vault Contributor".
@@ -21,6 +29,9 @@ locals {
     },
     {
       "appinsights-connection-string" = azurerm_application_insights.main.connection_string
+    },
+    {
+      "log-hash-key" = random_password.log_hash_key.result
     },
     {
       "redis-url"            = "rediss://${azapi_resource.redis["cache"].output.properties.hostName}:10000/0"

@@ -8,8 +8,11 @@
   httpx / FastAPI / ASGI instrumentations, so one customer turn is ONE trace across services.
 - Resource attributes follow the semantic conventions: service.name, service.namespace,
   service.version, deployment.environment.name, plus k8s.* added by the collector.
-- Logs: structlog JSON on stdout with trace_id / span_id on every line, and the same records
-  bridged to OTLP logs so they are correlated with traces in the backend.
+- Logs: structlog JSON on stdout with trace_id / span_id on every line. Each line is also emitted
+  through the OTel Logs API with its fields as attributes, so it reaches the collector over OTLP.
+  logs.py hashes identifiers and redacts customer text before either output. The stdlib handler
+  below only carries what third-party libraries log through `logging`; those lines are not scrubbed
+  here (the collector's redaction applies).
 - GenAI: Microsoft Agent Framework's instrumentation (OTel GenAI conventions) is enabled with
   prompt / completion capture OFF (PII). `OTEL_GENAI_CAPTURE_CONTENT=true` turns it on (dev only).
 
@@ -20,12 +23,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from collections.abc import MutableMapping
 from typing import Any
 
 import structlog
 from opentelemetry import trace
+
+from support_assistant.logs import describe_exception, export_to_otel, protect_identifiers
 
 SERVICE_NAMESPACE = "support-assistant"
 _configured = False
@@ -47,11 +53,31 @@ def _configure_logging() -> None:
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             _add_trace_ids,
+            # In this order: hide identifiers and customer text, make exceptions safe, then export.
+            protect_identifiers,
+            describe_exception,
+            export_to_otel,
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         logger_factory=structlog.PrintLoggerFactory(sys.stdout),
     )
+
+
+_SESSION_IN_URL = re.compile(r"(session_id=)[^&\s\"]+")
+
+
+class RedactSessionInUrls(logging.Filter):
+    """`GET /uploads?session_id=...` carries the session id in the URL, and uvicorn's access log
+    prints URLs. This rewrites the value before the line is written."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _SESSION_IN_URL.sub(r"\1[redacted]", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
 
 
 def resource_attributes(service: str) -> dict[str, str]:
@@ -67,6 +93,9 @@ def setup_telemetry(service: str) -> None:
     """Idempotent. Call once per process at startup."""
     global _configured
     _configure_logging()
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(x, RedactSessionInUrls) for x in access.filters):
+        access.addFilter(RedactSessionInUrls())
     if _configured or not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         return
     _configured = True

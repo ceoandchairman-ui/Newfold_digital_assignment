@@ -1,0 +1,17 @@
+# Weekly update pull requests, so a fix for a vulnerable dependency arrives as a reviewable change
+# instead of waiting for someone to notice. Security updates are raised immediately regardless.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: terraform
+    directory: /infra/terraform
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }

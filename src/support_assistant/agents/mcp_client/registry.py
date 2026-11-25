@@ -17,12 +17,16 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, Protocol
 
+import structlog
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from support_assistant.agents.mcp_client.connection import McpConnection
 from support_assistant.errors import ExternalServiceUnavailable, NotFoundError
+from support_assistant.logs import error_fields
 from support_assistant.mcp_catalog import ALL_SERVERS, WRITE_TOOLS, ServerSpec
 from support_assistant.observability import CIRCUIT_OPENED, tracer
+
+log = structlog.get_logger()
 
 ToolFn = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -98,6 +102,7 @@ class McpRegistry:
             attributes={"rpc.system": "mcp", "rpc.service": server, "rpc.method": tool},
         ) as span:
             if breaker.is_open:
+                log.warning("circuit_rejected_call", dependency=server, tool=tool)
                 span.set_status(Status(StatusCode.ERROR, "circuit open"))
                 raise ExternalServiceUnavailable(
                     f"mcp server {server} is unavailable (circuit open)"
@@ -109,6 +114,7 @@ class McpRegistry:
                 breaker.failure()
                 if breaker.is_open and not was_open:
                     CIRCUIT_OPENED.add(1, {"rpc.service": server})
+                    log.error("circuit_opened", dependency=server, **error_fields(exc))
                 span.record_exception(exc)
                 span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
                 raise
@@ -132,7 +138,8 @@ class McpRegistry:
             try:
                 listed = await self._conns[server].list_tools()
                 served = {t.name for t in listed.tools}
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                log.warning("mcp_readiness_failed", dependency=server, **error_fields(exc))
                 served = set()
             missing.extend(sorted(names - served))
         return missing

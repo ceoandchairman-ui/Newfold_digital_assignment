@@ -21,6 +21,7 @@ import httpx
 CHECKS: tuple[tuple[str, str], ...] = (
     ("fat-backend", "http://fat-backend:8000/healthz"),
     ("orchestrator", "http://orchestrator:8000/healthz"),
+    ("retrieval", "http://retrieval:8000/readyz"),
     ("agent-director", "http://agent-director:8000/readyz"),
     ("agent-troubleshooter", "http://agent-troubleshooter:8000/readyz"),
     ("agent-evaluator", "http://agent-evaluator:8000/readyz"),

@@ -95,4 +95,10 @@ def test_with_an_endpoint_each_role_gets_its_own_deployment_and_effort(monkeypat
     monkeypatch.setattr(MafLLM, "__init__", fake_init)
     s = _settings(azure_openai_endpoint="https://oai.example")
     build_support_llms(s)
-    assert seen == [("chat-support", "low"), ("chat-planner", "medium")]
+    # each role: its own deployment and effort, then its fallback deployment (no effort)
+    assert seen == [
+        ("chat-support", "low"),
+        ("chat-planner", None),
+        ("chat-planner", "medium"),
+        ("chat-support", None),
+    ]

@@ -180,17 +180,16 @@ async def test_each_service_can_do_exactly_what_it_needs_and_no_more(pool):
     assert not await _can(pool, mcp, "knowledge_base_chunks", "SELECT")
 
     orch = await _grant(pool, "orchestrator")
-    assert await _can(pool, orch, "audit_events", "INSERT") and await _can(
-        pool, orch, "knowledge_base_chunks", "SELECT"
-    )
+    assert await _can(pool, orch, "audit_events", "INSERT")
+    assert not await _can(pool, orch, "knowledge_base_chunks", "SELECT")
     assert not await _can(pool, orch, "audit_events", "UPDATE") and not await _can(
         pool, orch, "audit_events", "DELETE"
     )
     assert not await _can(pool, orch, "bills", "SELECT")
 
-    trb = await _grant(pool, "agent-troubleshooter")
-    assert await _can(pool, trb, "knowledge_base_chunks", "SELECT") and not await _can(
-        pool, trb, "knowledge_base_chunks", "INSERT"
+    ret = await _grant(pool, "retrieval")
+    assert await _can(pool, ret, "knowledge_base_chunks", "SELECT") and not await _can(
+        pool, ret, "knowledge_base_chunks", "INSERT"
     )
 
     ix = await _grant(pool, "indexer")
@@ -206,14 +205,14 @@ async def test_each_service_can_do_exactly_what_it_needs_and_no_more(pool):
         pool, be, "transaction_history", "SELECT"
     )
 
-    for blind in ("agent-director", "agent-evaluator"):
+    for blind in ("agent-director", "agent-troubleshooter", "agent-evaluator"):
         role = await _grant(pool, blind)
         assert not await _can(pool, role, "customers", "SELECT")  # they reach data only through MCP
 
 
 async def test_a_writing_role_can_use_the_sequences_it_needs_and_a_reader_cannot(pool):
     orch = await _grant(pool, "orchestrator")  # inserts into audit_events (BIGSERIAL)
-    trb = await _grant(pool, "agent-troubleshooter")
+    trb = await _grant(pool, "retrieval")
     async with pool.connection() as conn:
         w = await (
             await conn.execute(

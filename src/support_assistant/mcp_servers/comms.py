@@ -22,12 +22,14 @@ def build_comms_server(outbox: Outbox, *, host: str = "0.0.0.0", port: int = COM
     server = FastMCP(COMMS.name, host=host, port=port)
 
     @server.tool()
-    async def send_notification(customer_id: str, channel: str, template: str) -> dict[str, Any]:
+    async def send_notification(
+        customer_id: str, channel: str, template: str, event_id: str | None = None
+    ) -> dict[str, Any]:
         """Queue an email or SMS (Service Bus in Azure; log-only while the stub flags are set)."""
         if channel not in CHANNELS:
             return safe(ValidationError("unsupported channel"))
         try:
-            await outbox.enqueue(customer_id, channel, template)
+            await outbox.enqueue(customer_id, channel, template, event_id)
             return {"ok": True, "queued": True}
         except Exception as exc:  # noqa: BLE001
             return safe(exc)

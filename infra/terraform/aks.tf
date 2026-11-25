@@ -75,6 +75,7 @@ locals {
     "agent-director",
     "agent-troubleshooter",
     "agent-evaluator",
+    "retrieval", # search + reranker (reads knowledge_base_chunks)
     "mcp-servers",
     "notification-worker",
     "indexer",      # reads documents from blob storage and writes knowledge_base_chunks

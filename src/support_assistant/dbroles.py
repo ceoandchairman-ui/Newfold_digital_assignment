@@ -10,7 +10,7 @@ administrator, and is safe to run on every deploy:
   removed in the database (no drift), and a service gets nothing it is not listed for.
 
 The grants are the access each service really needs, derived from the repositories and services it
-calls. agent-director and agent-evaluator reach the data only through MCP, so they get nothing.
+calls. The agents reach data only through MCP and the retrieval service, so they get nothing.
 """
 
 from __future__ import annotations
@@ -45,19 +45,18 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
         ("SELECT, INSERT, UPDATE, DELETE", ["customer_uploads"]),
     ],
     # Mirrors the team's documents into the knowledge base: add new chunks, remove stale ones.
-    "indexer": [("SELECT, INSERT, DELETE", ["knowledge_base_chunks"])],
+    "indexer": [("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks"])],
     # Same job, run continuously: indexes a document soon after the team uploads it.
-    "index-worker": [("SELECT, INSERT, DELETE", ["knowledge_base_chunks"])],
-    # Graph-node retrieval and the audit trail.
-    "orchestrator": [
-        ("SELECT", ["knowledge_base_chunks"]),
-        ("INSERT", ["audit_events"]),
-    ],
-    "agent-troubleshooter": [("SELECT", ["knowledge_base_chunks"])],
+    "index-worker": [("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks"])],
+    # Answer-time search and reranking: the only service that reads the knowledge base to answer.
+    "retrieval": [("SELECT", ["knowledge_base_chunks"])],
+    # The audit trail.
+    "orchestrator": [("INSERT", ["audit_events"])],
     # Looks up a customer's phone and email to send a notification.
     "notification-worker": [("SELECT", ["customers"])],
     # Agents without direct database access, and the bootstrap admin itself:
     "agent-director": [],
+    "agent-troubleshooter": [],
     "agent-evaluator": [],
     "db-bootstrap": [],
 }

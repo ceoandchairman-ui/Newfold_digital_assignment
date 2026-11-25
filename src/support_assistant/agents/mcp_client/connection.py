@@ -16,7 +16,12 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
+import structlog
+
 from support_assistant.errors import ExternalServiceUnavailable
+from support_assistant.logs import error_fields
+
+log = structlog.get_logger()
 
 Opener = Callable[[str], AbstractAsyncContextManager[Any]]
 _Item = tuple[str, tuple[Any, ...], "asyncio.Future[Any]"]
@@ -56,7 +61,8 @@ class McpConnection:
             await self._queue.put(None)
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except (TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError) as exc:
+                log.warning("mcp_close_forced", **error_fields(exc))
                 self._task.cancel()
         self._task = None
 
@@ -65,6 +71,9 @@ class McpConnection:
         try:
             return await self._once(method, args)
         except Exception as first:  # noqa: BLE001 - one retry on a fresh connection, reads only
+            log.warning(
+                "mcp_request_failed", operation=method, will_retry=retry, **error_fields(first)
+            )
             if not retry:
                 raise ExternalServiceUnavailable(f"mcp {method} failed") from first
             task = self._task
@@ -73,6 +82,7 @@ class McpConnection:
             try:
                 return await self._once(method, args)
             except Exception as exc:  # noqa: BLE001
+                log.error("mcp_unreachable", operation=method, **error_fields(exc))
                 raise ExternalServiceUnavailable(f"mcp {method} unreachable") from exc
 
     async def _once(self, method: str, args: tuple[Any, ...]) -> Any:
@@ -104,6 +114,7 @@ class McpConnection:
                     try:
                         result = await getattr(session, method)(*args)
                     except Exception as exc:  # noqa: BLE001 - the connection itself failed
+                        log.warning("mcp_connection_broken", operation=method, **error_fields(exc))
                         broken.set()
                         if not fut.done():
                             fut.set_exception(exc)
@@ -128,6 +139,7 @@ class McpConnection:
                     pending.add(t)
                     t.add_done_callback(pending.discard)
         except Exception as exc:  # noqa: BLE001 - failed to connect or the connection died
+            log.warning("mcp_connection_lost", **error_fields(exc))
             self._fail_queued(queue, exc)
         finally:
             for t in pending:

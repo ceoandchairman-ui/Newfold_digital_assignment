@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from fakes import FakeRetrieval
 from support_assistant.agents import roles
 from support_assistant.agents.harness import Harness
 from support_assistant.agents.judge import (
@@ -24,7 +25,7 @@ class Judge:
     def __init__(self, answer="", *, boom=False, hang=False):
         self.answer, self.boom, self.hang, self.seen = answer, boom, hang, []
 
-    async def respond(self, instructions, facts, user_message):
+    async def respond(self, instructions, facts, user_message, history=""):
         self.seen.append((instructions, facts, user_message))
         if self.hang:
             await asyncio.sleep(10)
@@ -37,13 +38,20 @@ def _verdict(supported: bool, confidence: float) -> str:
     return json.dumps({"supported": supported, "confidence": confidence})
 
 
-def _req(reply=REPLY, intent="TROUBLESHOOT", chunks=CHUNKS) -> AgentRequest:
+def _kb() -> FakeRetrieval:
+    return FakeRetrieval(("4", "Guide > APN", "Reset the APN to the carrier default."))
+
+
+REFS = [{"store": "company_knowledge", "id": 1, "content_hash": "hash-1"}]
+
+
+def _req(reply=REPLY, intent="TROUBLESHOOT", refs=REFS) -> AgentRequest:
     return AgentRequest(
         customer_id="C1",
         session_id="S",
         identity_verified=True,
         messages=[],
-        context={"mode": "reply_check", "reply": reply, "intent": intent, "kb_chunks": chunks},
+        context={"mode": "reply_check", "reply": reply, "intent": intent, "evidence_refs": refs},
     )
 
 
@@ -89,43 +97,62 @@ async def test_the_sources_reach_the_judge_as_data_and_the_citation_line_is_remo
 
 # --- inside the evaluator ---------------------------------------------------------------------
 async def test_an_unsupported_reply_is_rejected_by_the_eval_agent():
-    res = await roles.evaluator(_req(), _h(), judge=Judge(_verdict(False, 0.95)))
+    res = await roles.evaluator(_req(), _h(), judge=Judge(_verdict(False, 0.95)), retrieval=_kb())
     assert res.verdict == "reject"
 
 
 async def test_a_supported_reply_is_approved():
-    res = await roles.evaluator(_req(), _h(), judge=Judge(_verdict(True, 0.95)))
+    res = await roles.evaluator(_req(), _h(), judge=Judge(_verdict(True, 0.95)), retrieval=_kb())
     assert res.verdict == "approve"
 
 
 async def test_a_broken_judge_never_blocks_a_reply():
     for j in (Judge(boom=True), Judge("garbage"), Judge(hang=True)):
-        res = await roles.evaluator(_req(), _h(), judge=j, judge_timeout_s=0.05)
+        res = await roles.evaluator(_req(), _h(), judge=j, judge_timeout_s=0.05, retrieval=_kb())
         assert res.verdict == "approve"
 
 
 async def test_the_rules_run_first_so_a_reply_without_a_citation_needs_no_judge():
     j = Judge(_verdict(True, 1.0))
-    res = await roles.evaluator(_req(reply="Reset the APN."), _h(), judge=j)
+    res = await roles.evaluator(_req(reply="Reset the APN."), _h(), judge=j, retrieval=_kb())
     assert res.verdict == "reject" and j.seen == []
 
 
 @pytest.mark.parametrize(
-    ("intent", "chunks", "reply"),
+    ("intent", "reply"),
     [
-        ("INSTRUCT", CHUNKS, REPLY),  # the judge is for troubleshooting replies
-        ("TROUBLESHOOT", [], REPLY),  # nothing to ground against
-        ("TROUBLESHOOT", CHUNKS, CLOSING_REPLY),  # the fixed closing text is not a claim
+        ("INSTRUCT", REPLY),  # it also rests on account facts the judge cannot see
+        ("TROUBLESHOOT", CLOSING_REPLY),  # the fixed closing text is not a claim
     ],
 )
-async def test_the_judge_is_skipped_when_there_is_nothing_to_check(intent, chunks, reply):
-    j = Judge(_verdict(False, 1.0))
-    res = await roles.evaluator(_req(reply=reply, intent=intent, chunks=chunks), _h(), judge=j)
-    assert res.verdict == "approve" and j.seen == []
+async def test_the_judge_is_skipped_when_there_is_nothing_to_check(intent, reply):
+    j, kb = Judge(_verdict(False, 1.0)), _kb()
+    res = await roles.evaluator(_req(reply=reply, intent=intent), _h(), judge=j, retrieval=kb)
+    assert res.verdict == "approve" and j.seen == [] and kb.fetched == []
 
 
-async def test_without_a_judge_the_rules_alone_decide():
-    assert (await roles.evaluator(_req(), _h())).verdict == "approve"
+async def test_without_a_judge_the_rules_and_the_evidence_check_decide():
+    assert (await roles.evaluator(_req(), _h(), retrieval=_kb())).verdict == "approve"
+
+
+# --- evidence that cannot be checked never passes ------------------------------------------------
+@pytest.mark.parametrize(
+    ("refs", "retrieval"),
+    [
+        ([], _kb()),  # no references at all
+        ([{"store": "company_knowledge", "id": 1, "content_hash": "old"}], _kb()),  # changed
+        ([{"store": "company_knowledge", "id": 9, "content_hash": "hash-9"}], _kb()),  # deleted
+        ([*REFS, {"store": "company_knowledge", "id": 9, "content_hash": "x"}], _kb()),  # one gone
+        ([{"store": "customer_memory", "id": 1, "content_hash": "hash-1"}], _kb()),  # not a store
+        (["nonsense"], _kb()),
+        (REFS, FakeRetrieval(down=True)),
+        (REFS, None),
+    ],
+)
+async def test_a_reply_whose_evidence_cannot_be_checked_is_rejected(refs, retrieval):
+    j = Judge(_verdict(True, 1.0))
+    res = await roles.evaluator(_req(refs=refs), _h(), judge=j, retrieval=retrieval)
+    assert res.verdict == "reject" and j.seen == []
 
 
 async def test_a_payment_verdict_never_involves_the_judge():

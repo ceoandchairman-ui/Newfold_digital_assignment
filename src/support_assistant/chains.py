@@ -7,13 +7,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_openai import AzureChatOpenAI
 
 from support_assistant.config import Settings
+from support_assistant.logs import error_fields
 from support_assistant.models import Role, model_for
+
+log = structlog.get_logger()
 
 _PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -69,6 +73,7 @@ async def rewrite_query(
     text = "\n".join(f"{m['role']}: {m['content']}" for m in history[-6:])
     try:
         out = (await chain.ainvoke({"history": text, "message": message})).strip()
-    except Exception:  # noqa: BLE001 - retrieval must still work on the original text
+    except Exception as exc:  # noqa: BLE001 - retrieval must still work on the original text
+        log.warning("query_rewrite_failed", action="use_raw_message", **error_fields(exc))
         return message
     return out or message
