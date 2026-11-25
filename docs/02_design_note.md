@@ -2,7 +2,7 @@
 
 **One line:** a telecom support assistant where *money and identity are decided by deterministic code*, and language models only route, reason, word replies and judge.
 
-The same three diagrams, rendered as one page, are in `docs/diagrams/architecture.html`. Their Mermaid sources are `docs/diagrams/*.mmd`.
+The current diagrams are on one page, `docs/diagrams/architecture.html`, with sources in `docs/diagrams/current/`. The three diagrams in this note are simpler and may lag behind them.
 
 ## Architecture: application and system design
 

@@ -35,7 +35,7 @@ Each test name reads as a sentence, for example `test_gateway_timeout_never_clai
 
 **Read an example conversation:** `docs/example_transcripts.md` walks through each journey step by step, and each one matches an automated test.
 
-**See the architecture:** `docs/diagrams/architecture.html` has three diagrams (Azure infrastructure, application and system design, the LangGraph orchestrator). The same diagrams are in `docs/02_design_note.md` and as Mermaid sources in `docs/diagrams/*.mmd`.
+**See the architecture:** `docs/diagrams/architecture.html` shows six current diagrams on one page: Azure infrastructure, delivery pipelines, RAG and background workloads, one request end to end, agent orchestration, and retriever metadata. Their Mermaid sources are in `docs/diagrams/current/`.
 
 ## B. Integration tests against real Postgres and Redis (CI)
 
@@ -165,5 +165,5 @@ Beyond the model and provider settings above, the ones you are most likely to ch
 | `src/support_assistant/domain/`, `services/` | Business rules and payment/retrieval services |
 | `migrations/`, `seed/` | Schema and demo data |
 | `infra/terraform/`, `deploy/helm/`, `.github/workflows/` | Infrastructure, charts, pipelines |
-| `docs/diagrams/` | The three architecture diagrams: Mermaid sources (`*.mmd`) and `architecture.html` |
+| `docs/diagrams/` | `architecture.html` and, in `current/`, the Mermaid sources and images. The `*.mmd` files directly in `docs/diagrams/` are older versions |
 | `tests/` | Unit and journey tests; `tests/integration/` needs real services |
