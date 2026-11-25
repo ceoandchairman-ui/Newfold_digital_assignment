@@ -4,7 +4,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      version = "~> 5.14"
     }
     # Used where azurerm lacks a resource (Azure Managed Redis).
     azapi = {
