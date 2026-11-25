@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - run: helm lint deploy/helm/support
       - run: helm template support deploy/helm/support --set ingress.enabled=true > rendered.yaml
       - name: Kubernetes schema validation
