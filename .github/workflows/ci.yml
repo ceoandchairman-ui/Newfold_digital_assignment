@@ -59,7 +59,7 @@ jobs:
         working-directory: infra/terraform
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false
       - run: terraform validate
@@ -144,7 +144,7 @@ jobs:
       TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
       - run: terraform init -input=false -backend-config="envs/${{ matrix.env }}.backend.hcl"
       - id: plan
         run: terraform plan -input=false -lock=false -no-color -var-file="envs/${{ matrix.env }}.tfvars" > plan.txt
