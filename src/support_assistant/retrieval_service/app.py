@@ -29,7 +29,7 @@ from support_assistant.contracts import (
     SearchResponse,
 )
 from support_assistant.db import make_pool
-from support_assistant.embeddings import HttpEmbedder
+from support_assistant.embeddings import azure_embedder
 from support_assistant.errors import SupportError
 from support_assistant.logs import (
     SESSION_HEADER,
@@ -59,19 +59,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_telemetry("retrieval")
     pool = make_pool(settings)
     await pool.open()
-    api_key = os.environ.get("EMBEDDER_API_KEY", "")
-
-    async def token() -> str:
-        return api_key
-
-    embedder = HttpEmbedder(
-        settings.embedder_url,
-        settings.embedding_model,
-        dim=settings.embedding_dim,
-        token_provider=token,
-    )
+    embedder = azure_embedder(settings)
     reranker = (
-        HttpReranker(settings.reranker_url, settings.reranker_model, api_key)
+        HttpReranker(
+            settings.reranker_url, settings.reranker_model, os.environ.get("RERANKER_API_KEY", "")
+        )
         if settings.rerank_enabled and settings.reranker_url
         else None
     )

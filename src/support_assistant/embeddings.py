@@ -1,8 +1,8 @@
 """Embedding client behind an interface (E2-3).
 
-The production implementation calls an embedder API (open-source multilingual model behind an
-OpenAI-compatible `/embeddings` endpoint). The provider and model are open decisions; the
-dimension comes from configuration so `vector(N)` and the model always agree.
+Production calls Azure OpenAI's OpenAI-compatible `/openai/v1/embeddings` endpoint with the
+pod's own Entra identity (no API key). The dimension comes from configuration and is sent with
+every request, so `vector(N)` and the model always agree.
 """
 
 from __future__ import annotations
@@ -14,8 +14,11 @@ from typing import Protocol
 
 import httpx
 
+from support_assistant.config import Settings
 from support_assistant.errors import ExternalServiceUnavailable, ValidationError
 from support_assistant.resilience import retrying
+
+AZURE_AI_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
 class Embedder(Protocol):
@@ -70,11 +73,13 @@ class HttpEmbedder:
         batch_size: int = 32,
         timeout_s: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        on_close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._model = model
         self._dim = dim
         self._batch_size = batch_size
         self._token_provider = token_provider
+        self._on_close = on_close
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout_s, transport=transport)
 
     @property
@@ -93,9 +98,8 @@ class HttpEmbedder:
         headers = {}
         if self._token_provider is not None:
             headers["Authorization"] = f"Bearer {await self._token_provider()}"
-        resp = await self._client.post(
-            "/embeddings", json={"model": self._model, "input": batch}, headers=headers
-        )
+        body = {"model": self._model, "input": batch, "dimensions": self._dim}
+        resp = await self._client.post("/embeddings", json=body, headers=headers)
         resp.raise_for_status()
         return resp
 
@@ -113,3 +117,30 @@ class HttpEmbedder:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        if self._on_close is not None:
+            await self._on_close()
+
+
+def azure_embedder(settings: Settings) -> HttpEmbedder:
+    """The embedding deployment on this environment's Azure OpenAI account.
+
+    The address is derived from `azure_openai_endpoint` and cannot be set separately, so the
+    Entra token is only ever sent to that account. `embedding_model` is the deployment name.
+    """
+    if not settings.azure_openai_endpoint:
+        raise RuntimeError("AZURE_OPENAI_ENDPOINT is required for embeddings")
+
+    from azure.identity.aio import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+
+    async def token() -> str:
+        return (await credential.get_token(AZURE_AI_SCOPE)).token
+
+    return HttpEmbedder(
+        settings.azure_openai_endpoint.rstrip("/") + "/openai/v1",
+        settings.embedding_model,
+        dim=settings.embedding_dim,
+        token_provider=token,
+        on_close=credential.close,
+    )

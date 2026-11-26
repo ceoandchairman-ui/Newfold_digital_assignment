@@ -14,7 +14,9 @@ from support_assistant.services.gateway_sim import FaultMode, SimulatedGateway
 
 
 class Env:
-    def __init__(self, monkeypatch, mode: FaultMode = FaultMode.APPROVE, docs=None) -> None:
+    def __init__(
+        self, monkeypatch, mode: FaultMode = FaultMode.APPROVE, docs=None, llms=None
+    ) -> None:
         self.world = World()
         install_repo(monkeypatch, self.world)
         self.gateway = SimulatedGateway(mode)
@@ -24,7 +26,7 @@ class Env:
         registry = StaticRegistry(tools)  # in production each agent has its own McpRegistry
         client = InProcessAgentClient(
             registries={"director": registry, "evaluator": registry, "troubleshooter": registry},
-            llms={"director": TemplateLLM(), "troubleshooter": TemplateLLM()},
+            llms=llms or {"director": TemplateLLM(), "troubleshooter": TemplateLLM()},
             retrieval=self.retriever,
         )
 

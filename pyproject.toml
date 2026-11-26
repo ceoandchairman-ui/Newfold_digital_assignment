@@ -26,7 +26,8 @@ dependencies = [
     "uvicorn>=0.30",
     "mcp>=1.9,<2", # 2.x renamed FastMCP and the client API; migrate deliberately (E8)
     "azure-identity>=1.17",
-    "azure-servicebus>=7.12",
+    # Kafka client for the notification outbox (Azure Event Hubs speaks the Kafka protocol).
+    "aiokafka>=0.12,<1",
     "azure-communication-sms>=1.0",
     "azure-communication-email>=1.0",
     "structlog>=24.1",
@@ -82,3 +83,8 @@ ignore = ["E501"]  # line length is the formatter's job; long SQL and comments a
 python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
+
+# aiokafka ships no type information.
+[[tool.mypy.overrides]]
+module = ["aiokafka", "aiokafka.*"]
+ignore_missing_imports = true

@@ -3,8 +3,10 @@
 The main graph has three AGENT nodes, each a small subgraph of its own (backlog E4-10, scope doc
 section 3), plus the plain-code gates around them:
 
-    auth_gate -> unverified: deny -> egress
-              -> verified:   support_agent
+    START -> unverified: deny -> egress
+          -> verified:   history_check -> support_agent
+    history_check   new or returning customer, first or later message; past memory is fetched on a
+                    session's first message and reused from the checkpoint afterwards
     support_agent   (subgraph)  route -> normal_resp_gen                    simple questions
                                        -> instruct_gen                      reasoning questions
                                        -> billing_gen                       task questions, tools
@@ -56,6 +58,7 @@ from support_assistant.guards import assert_turn_separation, sanitize_reply
 from support_assistant.logs import error_fields
 from support_assistant.observability import PAYMENTS, tracer
 from support_assistant.orchestrator.client import AgentClient
+from support_assistant.services.customer_memory import HistoryLookup
 
 log = structlog.get_logger()
 
@@ -126,6 +129,10 @@ def _logged(branch: Callable[[SessionState], str]) -> Callable[[SessionState], s
 
 class SessionState(TypedDict, total=False):
     schema_version: int
+    # history_check's result. NOT sent by the caller, so the checkpoint keeps it between turns.
+    memory_for: str  # the customer it was loaded for; empty = not loaded yet
+    returning_customer: bool | None  # None = could not be checked
+    memory_note: str
     audit: Annotated[list[dict[str, Any]], _audit_reducer]  # this turn's tool calls (E5-5)
     customer_id: str
     session_id: str
@@ -154,6 +161,7 @@ def build_graph(
     checkpointer: BaseCheckpointSaver[Any],
     max_eval_retries: int = 2,
     max_troubleshoot_turns: int = 3,
+    history: HistoryLookup | None = None,
 ) -> Any:
     def _req(state: SessionState, **ctx: Any) -> AgentRequest:
         return AgentRequest(
@@ -168,9 +176,47 @@ def build_graph(
             },
         )
 
-    async def auth_gate(state: SessionState) -> dict[str, Any]:
-        """Deterministic entry check (E4-2). No model decides whether someone is verified."""
-        return {}
+    async def history_check(state: SessionState) -> dict[str, Any]:
+        """Plain code, no model. Two questions give four cases:
+
+            returning  first message
+               no           no        nothing to fetch, nothing saved
+               no           yes       looked up, found none: a new customer
+               yes          no        reuse the memory saved on the first message
+               yes          yes       fetch the past memory and save it for the session
+
+        "First message" means this session's checkpoint holds no memory for THIS customer, so one
+        customer's saved memory is never given to another. A failed or partial lookup is not saved
+        and is tried again on the next message.
+        """
+        messages = list(state.get("messages", []))
+        customer_id = state["customer_id"]
+        first = state.get("memory_for") != customer_id
+        update: dict[str, Any] = {}
+        if not first:
+            returning, note = state.get("returning_customer"), state.get("memory_note", "")
+        elif history is None:  # no lookup wired in (tests, local chat)
+            return {}
+        else:
+            query = next(
+                (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+                "",
+            )
+            try:
+                memory = await history(customer_id, state["session_id"], query)
+            except Exception as exc:  # noqa: BLE001 - memory is a bonus, never a blocker
+                log.warning("history_check_failed", **error_fields(exc))
+                return {"memory_for": "", "returning_customer": None, "memory_note": ""}
+            returning, note = memory.returning, memory.note
+            update = {
+                "memory_for": customer_id if memory.complete else "",
+                "returning_customer": returning,
+                "memory_note": note,
+            }
+        log.info("history_checked", returning=returning, first_message=first, has_memory=bool(note))
+        if note:
+            update["messages"] = [{"role": "system", "content": note}, *messages]
+        return update
 
     async def egress(state: SessionState) -> dict[str, Any]:
         """Every path ends here: the customer only ever sees filtered text (E5-4)."""
@@ -390,7 +436,8 @@ def build_graph(
         }
 
     def after_auth(state: SessionState) -> str:
-        return "support_agent" if state.get("identity_verified") else "deny"
+        """Deterministic entry check (E4-2), before any memory is read. No model decides it."""
+        return "history_check" if state.get("identity_verified") else "deny"
 
     def after_route(state: SessionState) -> str:
         """Dynamic routing on the customer's intent (E4-3). TROUBLESHOOT leaves this subgraph."""
@@ -448,7 +495,7 @@ def build_graph(
     # --- the main graph: three agents and the code around them -----------------------------------
     g = StateGraph(SessionState)
     for name, fn in (
-        ("auth_gate", auth_gate),
+        ("history_check", history_check),
         ("deny", deny),
         ("eval_agent", eval_agent),
         ("approve", approve),
@@ -458,10 +505,10 @@ def build_graph(
         g.add_node(name, _traced(name, fn))
     g.add_node("support_agent", support.compile())  # subgraphs share the state and the checkpointer
     g.add_node("troubleshoot_agent", trouble.compile())
-    g.add_edge(START, "auth_gate")
     g.add_conditional_edges(
-        "auth_gate", _logged(after_auth), {"deny": "deny", "support_agent": "support_agent"}
+        START, _logged(after_auth), {"deny": "deny", "history_check": "history_check"}
     )
+    g.add_edge("history_check", "support_agent")
     g.add_conditional_edges(
         "support_agent",
         _logged(after_support_agent),

@@ -1,4 +1,4 @@
-# Azure OpenAI, Key Vault, Service Bus (outbox) and Communication Services.
+# Azure OpenAI, Key Vault, Event Hubs (outbox) and Communication Services.
 
 # --- Azure OpenAI (Foundry) -----------------------------------------------------
 resource "azurerm_cognitive_account" "openai" {
@@ -84,58 +84,69 @@ resource "azurerm_private_endpoint" "keyvault" {
   }
 }
 
-# --- Service Bus: outbox for notifications (E6/E9) -------------------------------
-resource "azurerm_servicebus_namespace" "main" {
-  name                          = "sb-${local.name}-${local.suffix}"
+# --- Event Hubs (Kafka protocol): outbox for notifications (E6/E9) ---------------
+# Standard is the lowest tier with the Kafka endpoint that also supports private endpoints. It
+# replaces Service Bus Premium, which was billed per messaging unit per hour even when idle.
+resource "azurerm_eventhub_namespace" "main" {
+  name                          = "evh-${local.name}-${local.suffix}"
   location                      = azurerm_resource_group.main.location
   resource_group_name           = azurerm_resource_group.main.name
-  sku                           = "Premium" # private endpoints need Premium
-  capacity                      = 1
-  premium_messaging_partitions  = 1
+  sku                           = "Standard"
+  capacity                      = 1 # throughput units
+  minimum_tls_version           = "1.2"
   public_network_access_enabled = false
-  local_auth_enabled            = false
+  local_authentication_enabled  = false # Entra only
   tags                          = local.tags
 }
 
-resource "azurerm_servicebus_queue" "notifications" {
-  name                                 = "notifications"
-  namespace_id                         = azurerm_servicebus_namespace.main.id
-  max_delivery_count                   = 5
-  dead_lettering_on_message_expiration = true
-  requires_duplicate_detection         = true
+# Kafka topics. "notifications-dlq" is the dead-letter topic: the worker copies there what it cannot
+# send. Standard keeps events for at most 7 days; nothing reads the dead-letter topic automatically.
+resource "azurerm_eventhub" "notifications" {
+  for_each          = { "notifications" = 7, "notifications-dlq" = 7 } # name -> retention in days
+  name              = each.key
+  namespace_id      = azurerm_eventhub_namespace.main.id
+  partition_count   = 2
+  message_retention = each.value
 }
 
-resource "azurerm_private_endpoint" "servicebus" {
-  name                = "pe-sb-${local.name}"
+resource "azurerm_private_endpoint" "eventhubs" {
+  name                = "pe-evh-${local.name}"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   subnet_id           = azurerm_subnet.private_endpoints.id
   tags                = local.tags
 
   private_service_connection {
-    name                           = "servicebus"
-    private_connection_resource_id = azurerm_servicebus_namespace.main.id
+    name                           = "eventhubs"
+    private_connection_resource_id = azurerm_eventhub_namespace.main.id
     subresource_names              = ["namespace"]
     is_manual_connection           = false
   }
 
   private_dns_zone_group {
-    name                 = "servicebus"
-    private_dns_zone_ids = [azurerm_private_dns_zone.zones["servicebus"].id]
+    name                 = "eventhubs"
+    private_dns_zone_ids = [azurerm_private_dns_zone.zones["servicebus"].id] # same domain
   }
 }
 
-# Only the MCP servers (comms) send; only the notification worker receives.
-resource "azurerm_role_assignment" "sb_receiver" {
-  scope                = azurerm_servicebus_namespace.main.id
-  role_definition_name = "Azure Service Bus Data Receiver"
+# The MCP servers (comms) may only publish to "notifications". The worker reads it and may only
+# publish to the dead-letter topic.
+resource "azurerm_role_assignment" "notifications_sender" {
+  scope                = azurerm_eventhub.notifications["notifications"].id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = azurerm_user_assigned_identity.workload["mcp-servers"].principal_id
+}
+
+resource "azurerm_role_assignment" "notifications_receiver" {
+  scope                = azurerm_eventhub.notifications["notifications"].id
+  role_definition_name = "Azure Event Hubs Data Receiver"
   principal_id         = azurerm_user_assigned_identity.workload["notification-worker"].principal_id
 }
 
-resource "azurerm_role_assignment" "sb_sender" {
-  scope                = azurerm_servicebus_namespace.main.id
-  role_definition_name = "Azure Service Bus Data Sender"
-  principal_id         = azurerm_user_assigned_identity.workload["mcp-servers"].principal_id
+resource "azurerm_role_assignment" "notifications_dead_letter_sender" {
+  scope                = azurerm_eventhub.notifications["notifications-dlq"].id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = azurerm_user_assigned_identity.workload["notification-worker"].principal_id
 }
 
 # --- Communication Services (email + SMS, D13) ----------------------------------

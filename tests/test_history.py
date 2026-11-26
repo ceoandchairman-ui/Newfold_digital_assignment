@@ -1,15 +1,14 @@
-"""The fat backend offers the customer's last few days of conversations on a session's first turn."""
+"""Loading a customer's earlier conversations, and the note built from them."""
 
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-import httpx
 import pytest
 
-from support_assistant.backend import app as backend
 from support_assistant.config import Settings
 from support_assistant.context import history_context
+from support_assistant.services import customer_memory
+from support_assistant.services.customer_memory import load_customer_memory
 
 
 class Cur:
@@ -24,8 +23,9 @@ class Cur:
 
 
 class Pool:
-    def __init__(self, sessions=None, fail=False):
+    def __init__(self, sessions=None, *, returning=None, fail=()):
         self.sessions, self.fail, self.queries = sessions or [], fail, []
+        self.returning = bool(self.sessions) if returning is None else returning
 
     @asynccontextmanager
     async def connection(self):
@@ -33,38 +33,14 @@ class Pool:
 
         class Conn:
             async def execute(self, sql, params=None):
-                pool.queries.append((" ".join(sql.split()), params))
-                if pool.fail:
+                sql = " ".join(sql.split())
+                pool.queries.append((sql, params))
+                kind = "exists" if "AS found" in sql else "sessions"
+                if kind in pool.fail:
                     raise ConnectionError("db down")
-                return Cur(pool.sessions if "FROM session_conversations" in sql else [])
+                return Cur([{"found": pool.returning}] if kind == "exists" else pool.sessions)
 
         yield Conn()
-
-
-class KV:
-    def __init__(self):
-        self.data = {"verified:S1": "C1"}
-
-    async def get(self, k):
-        return self.data.get(k)
-
-    async def set(self, k, v, ex=None, nx=False):
-        self.data[k] = v
-        return True
-
-    async def delete(self, k):
-        self.data.pop(k, None)
-
-
-class Memory:
-    def __init__(self, history):
-        self.history = history
-
-    async def load(self, cid, sid):
-        return self.history
-
-    async def append(self, cid, sid, new):
-        return new
 
 
 def _session(sid, user, answer, day):
@@ -78,77 +54,77 @@ def _session(sid, user, answer, day):
     }
 
 
-def _setup(pool, history=(), **settings):
-    sent: list[dict] = []
+def _settings(**values):
+    return Settings(database_url="postgresql://x", redis_url="redis://x", **values)
 
-    def orch(request: httpx.Request) -> httpx.Response:
-        sent.append(json.loads(request.content))
-        return httpx.Response(
-            200, json={"reply": "ok", "pending_approval": None, "escalated": False}
-        )
 
-    settings.setdefault("min_session_id_length", 0)  # these tests use short session ids on purpose
-    backend.app.state.s = Settings(database_url="postgresql://x", redis_url="redis://x", **settings)
-    backend.app.state.redis, backend.app.state.pool = KV(), pool
-    backend.app.state.memory, backend.app.state.rewrite = Memory(list(history)), None
-    backend.app.state.http = httpx.AsyncClient(
-        base_url="http://orch", transport=httpx.MockTransport(orch)
+async def _load(pool, embedder=None, **settings):
+    return await load_customer_memory(
+        pool, embedder, _settings(**settings), "C1", "S1", "my data is slow again"
     )
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=backend.app), base_url="http://t")
-    return client, sent
 
 
-async def _chat(client):
-    return await client.post("/chat", json={"session_id": "S1", "message": "my data is slow again"})
-
-
-async def test_the_first_turn_carries_a_note_about_the_last_days_conversations():
+async def test_a_returning_customer_gets_a_note_about_the_last_days_conversations():
     pool = Pool([_session("OLD1", "sim not working", "Reseat the SIM", 22)])
-    client, sent = _setup(pool)
-    await _chat(client)
-    first = sent[0]["messages"][0]
-    assert first["role"] == "system" and "Earlier conversations" in first["content"]
-    assert "sim not working" in first["content"] and "2026-11-22" in first["content"]
-    sql, params = pool.queries[0]
+    memory = await _load(pool)
+    assert memory.returning and memory.complete
+    assert "Earlier conversations" in memory.note
+    assert "sim not working" in memory.note and "2026-11-22" in memory.note
+    sql, params = pool.queries[1]
     assert "customer_id = %s" in sql and params == ("C1", 5, 6)  # this customer, 5 days, one spare
+
+
+async def test_a_new_customer_costs_one_query_and_no_embedding_call():
+    pool = Pool([])
+    memory = await _load(pool, embedder=object())  # an object() would fail if it were used
+    assert not memory.returning and memory.note == "" and memory.complete
+    assert len(pool.queries) == 1 and pool.queries[0][1] == ("C1", "S1", "C1")
+
+
+async def test_past_episodes_are_added_for_a_returning_customer(monkeypatch):
+    async def search(pool, embedder, *, customer_id, query, top_k=3):
+        assert (customer_id, query) == ("C1", "my data is slow again")
+        return [{"summary": "no signal last week", "outcome": "resolved"}]
+
+    monkeypatch.setattr(customer_memory, "search_episodes", search)
+    memory = await _load(Pool([], returning=True), embedder=object())
+    assert "no signal last week" in memory.note and memory.complete
 
 
 async def test_the_current_session_is_not_repeated_back_to_itself():
     pool = Pool(
         [_session("S1", "this very session", "x", 23), _session("OLD1", "older issue", "y", 21)]
     )
-    client, sent = _setup(pool)
-    await _chat(client)
-    note = sent[0]["messages"][0]["content"]
+    note = (await _load(pool)).note
     assert "older issue" in note and "this very session" not in note
-
-
-async def test_later_turns_do_not_reload_the_history():
-    pool = Pool([_session("OLD1", "older issue", "y", 21)])
-    client, sent = _setup(pool, history=[{"role": "user", "content": "earlier in this session"}])
-    await _chat(client)
-    assert pool.queries == []  # only the first turn of a session asks
-    assert all(m["role"] != "system" for m in sent[0]["messages"])
 
 
 async def test_history_can_be_turned_off():
     pool = Pool([_session("OLD1", "older issue", "y", 21)])
-    client, sent = _setup(pool, history_days=0)
-    await _chat(client)
-    assert pool.queries == [] and sent[0]["messages"][0]["role"] == "user"
+    memory = await _load(pool, history_days=0)
+    assert memory.returning and memory.note == "" and len(pool.queries) == 1
 
 
-async def test_a_database_error_never_costs_the_turn():
-    client, sent = _setup(Pool(fail=True))
-    r = await _chat(client)
-    assert r.status_code == 200 and sent[0]["messages"][0]["role"] == "user"
+async def test_a_failed_fetch_is_marked_incomplete_so_it_is_tried_again(monkeypatch):
+    async def search(*a, **kw):
+        raise ConnectionError("embeddings down")
+
+    monkeypatch.setattr(customer_memory, "search_episodes", search)
+    pool = Pool([_session("OLD1", "older issue", "y", 21)])
+    memory = await _load(pool, embedder=object())
+    assert "older issue" in memory.note and not memory.complete
+    assert not (await _load(Pool([], returning=True, fail=("sessions",)))).complete
+
+
+async def test_not_knowing_whether_the_customer_is_returning_is_an_error_not_a_new_customer():
+    with pytest.raises(ConnectionError):
+        await _load(Pool(fail=("exists",)))
 
 
 async def test_the_window_and_the_number_of_sessions_come_from_settings():
-    pool = Pool([])
-    client, _ = _setup(pool, history_days=3, history_max_sessions=2)
-    await _chat(client)
-    assert pool.queries[0][1] == ("C1", 3, 3)
+    pool = Pool([], returning=True)
+    await _load(pool, history_days=3, history_max_sessions=2)
+    assert pool.queries[1][1] == ("C1", 3, 3)
 
 
 # --- the note itself ----------------------------------------------------------------------------

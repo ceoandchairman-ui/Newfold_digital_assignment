@@ -1,7 +1,8 @@
 """Orchestrator service: hosts the LangGraph, its Redis checkpointer and the per-session run lock.
 
 Graph state and checkpoints live in Redis (D9): key-value reads and writes keep per-step latency
-low. Postgres is not on this path: the orchestrator only writes the audit trail to it.
+low. Postgres is used for two things: the audit trail (written in the background), and one read of
+the customer's earlier conversations on a session's first message (the graph's history_check node).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any
 
 import structlog
@@ -23,6 +25,7 @@ from support_assistant.agents.mcp_client import McpRegistry
 from support_assistant.audit import BackgroundAudit, PgAuditSink
 from support_assistant.config import get_settings
 from support_assistant.db import make_pool
+from support_assistant.embeddings import azure_embedder
 from support_assistant.errors import ExternalServiceUnavailable, SupportError
 from support_assistant.locks import RunLock
 from support_assistant.logs import conversation, error_fields, new_turn_id
@@ -37,6 +40,7 @@ from support_assistant.observability import (
 from support_assistant.orchestrator.client import HttpAgentClient
 from support_assistant.orchestrator.graph import STATE_SCHEMA_VERSION, build_graph
 from support_assistant.redis_factory import make_redis
+from support_assistant.services.customer_memory import load_customer_memory
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
 from support_assistant.tool_cache import ToolResultCache
 
@@ -115,9 +119,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if tool_cache is not None:
                 await tool_cache.invalidate(customer_id)
 
-    audit_pool = make_pool(settings)
-    await audit_pool.open()
-    app.state.audit = BackgroundAudit(PgAuditSink(audit_pool))
+    db_pool = make_pool(settings)
+    await db_pool.open()
+    app.state.audit = BackgroundAudit(PgAuditSink(db_pool))
+    # Used to find relevant past episodes. Without an OpenAI endpoint, episodes are skipped.
+    embedder = azure_embedder(settings) if settings.azure_openai_endpoint else None
 
     client = HttpAgentClient(settings)
     app.state.graph = build_graph(
@@ -126,12 +132,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         saver,
         settings.max_eval_retries,
         settings.max_troubleshoot_turns,
+        history=partial(load_customer_memory, db_pool, embedder, settings),
     )
     yield
     await app.state.audit.drain()  # flush pending audit writes before closing the pool
     await mcp.aclose()
     await client.aclose()
-    await audit_pool.close()
+    if embedder is not None:
+        await embedder.aclose()
+    await db_pool.close()
     await redis.aclose()
     if tool_redis is not None:
         await tool_redis.aclose()

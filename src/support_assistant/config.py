@@ -56,8 +56,10 @@ class Settings(BaseSettings):
     history_max_sessions: int = Field(5, ge=1, le=10)
 
     # --- Embeddings / LLM ----------------------------------------------------
-    # D3: BGE-M3 via a managed OpenAI-compatible API. 1024 dims fits pgvector HNSW (limit 2000).
-    embedding_model: str = "BAAI/bge-m3"
+    # D3: Azure OpenAI. The value is both the deployment name (Terraform: openai_deployments) and
+    # what is recorded on every vector. The model is natively 3072 dims; 1024 are requested so it
+    # fits pgvector HNSW (limit 2000).
+    embedding_model: str = "text-embedding-3-large"
     embedding_dim: int = 1024
     # Raise this to force every document to be embedded again with the same model name.
     embedding_version: str = "1"
@@ -67,8 +69,7 @@ class Settings(BaseSettings):
     cosmos_endpoint: str | None = None
     cosmos_database: str = "registry"
     registry_required: bool = False
-    embedder_url: str = ""
-    # D18: open reranker on the same host, applied to the top candidates only.
+    # D18: open reranker, applied to the top candidates only. Its key is RERANKER_API_KEY.
     rerank_enabled: bool = False
     reranker_url: str = ""
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
@@ -181,7 +182,12 @@ class Settings(BaseSettings):
     acs_endpoint: str | None = None  # https://<name>.communication.azure.com
     acs_sms_from: str | None = None  # purchased ACS phone number
     acs_email_from: str | None = None  # verified ACS sender address, e.g. DoNotReply@<domain>
-    servicebus_namespace_fqdn: str | None = None  # e.g. sb-support-dev-xxxxx.servicebus.windows.net
+    # Notification outbox. In Azure this is the Event Hubs Kafka endpoint, with Entra sign-in only:
+    # <namespace>.servicebus.windows.net:9093
+    kafka_bootstrap_servers: str | None = None
+    kafka_topic: str = "notifications"
+    kafka_dead_letter_topic: str = "notifications-dlq"
+    kafka_consumer_group: str = "notification-worker"
 
     # --- Third-party providers. PLACEHOLDERS: none is configured yet, every one defaults to a stub.
     # Secrets belong in Key Vault (mounted as environment variables), never in this file.

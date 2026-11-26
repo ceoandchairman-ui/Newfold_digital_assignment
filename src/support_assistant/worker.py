@@ -1,8 +1,14 @@
-"""Notification worker: reads the Service Bus queue and sends through Communication Services.
+"""Notification worker: reads the Kafka topic and sends through Communication Services.
 
 The message handler is a pure function over injected senders so it is testable offline.
-Outcomes: sent -> complete the message; bad message -> dead-letter (no retry storm);
-provider outage -> abandon so Service Bus redelivers (max_delivery_count then dead-letters).
+Outcomes: sent -> commit the offset; bad message -> copy to the dead-letter topic (no retry
+storm); provider outage -> try again with a growing pause, and after MAX_ATTEMPTS dead-letter it.
+Kafka has none of a queue's per-message features, so the worker does them itself:
+  * the offset is committed only after a message is sent or dead-lettered (at-least-once);
+  * retries happen in place, so a failing message holds back the ones behind it in its partition;
+  * a repeated message_id is remembered in Redis for DEDUPE_TTL_S and not sent again. This is best
+    effort: if Redis is unavailable, or the worker dies between sending and recording, the customer
+    can get the message twice.
 Email goes to customers.email (migration 0004); a customer without one is dead-lettered for email.
 """
 
@@ -10,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -21,6 +27,7 @@ from support_assistant.config import Settings, get_settings
 from support_assistant.db import make_pool
 from support_assistant.errors import ExternalServiceUnavailable, SupportError
 from support_assistant.logs import error_fields
+from support_assistant.redis_factory import make_redis
 from support_assistant.resilience import backoff_delay
 
 log = structlog.get_logger()
@@ -174,44 +181,90 @@ def _email_sender(settings: Settings) -> EmailSender:
 
 RETRY_BASE_S = 2.0
 RETRY_CAP_S = 60.0
+MAX_ATTEMPTS = 5
+DEDUPE_TTL_S = 24 * 3600
 
 
-async def process_batch(
-    receiver: Any, messages: list[Any], handle: Callable[[str], Awaitable[Outcome]]
-) -> bool:
-    """Handle and settle each message. True if any of them has to be retried."""
-    needs_retry = False
-    for m in messages:
+Headers = Sequence[tuple[str, bytes]]
+DeadLetter = Callable[[bytes, Headers], Awaitable[None]]
+
+
+def message_id_of(headers: Headers) -> str | None:
+    return next(
+        (value.decode(errors="replace") for name, value in headers if name == "message_id"), None
+    )
+
+
+class SentLog:
+    """Which message ids were already sent. Redis being down never blocks a notification."""
+
+    def __init__(self, redis: Any, ttl_s: int = DEDUPE_TTL_S) -> None:
+        self._redis, self._ttl = redis, ttl_s
+
+    async def seen(self, message_id: str) -> bool:
         try:
-            outcome = await handle(str(m))
-        except Exception as exc:  # noqa: BLE001 - e.g. the database: redeliver, keep working
+            return bool(await self._redis.exists(f"notification:sent:{message_id}"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("notification_dedupe_unavailable", **error_fields(exc))
+            return False
+
+    async def record(self, message_id: str) -> None:
+        try:
+            await self._redis.set(f"notification:sent:{message_id}", "1", ex=self._ttl)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("notification_dedupe_unavailable", **error_fields(exc))
+
+
+async def process_message(
+    value: bytes,
+    headers: Headers,
+    handle: Callable[[str], Awaitable[Outcome]],
+    dead_letter: DeadLetter,
+    sent: SentLog,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> Outcome:
+    """Finish one message: send it, skip it as a repeat, or dead-letter it. Returns only when it is
+    safe to commit. If dead-lettering fails this raises, so the offset is not committed and the
+    message is read again."""
+    message_id = message_id_of(headers)
+    if message_id and await sent.seen(message_id):
+        log.info("notification_duplicate_skipped")
+        return Outcome.COMPLETE
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            outcome = await handle(value.decode(errors="replace"))
+        except Exception as exc:  # noqa: BLE001 - e.g. the database: try again, keep working
             log.error("notification_handler_failed", **error_fields(exc))
             outcome = Outcome.RETRY
-        needs_retry = needs_retry or outcome is Outcome.RETRY
-        try:
-            if outcome is Outcome.COMPLETE:
-                await receiver.complete_message(m)
-            elif outcome is Outcome.DEAD_LETTER:
-                log.warning("notification_dead_lettered")
-                await receiver.dead_letter_message(m, reason="unprocessable")
-            else:
-                await receiver.abandon_message(m)
-        except Exception as exc:  # noqa: BLE001 - a lost message lock: the queue redelivers it
-            log.error("notification_settle_failed", outcome=outcome.value, **error_fields(exc))
-    return needs_retry
+        if outcome is not Outcome.RETRY or attempt == MAX_ATTEMPTS:
+            break
+        # Without this pause an outage of a few seconds would use up every attempt.
+        delay = RETRY_BASE_S + backoff_delay(attempt, RETRY_BASE_S, RETRY_CAP_S)
+        log.warning("notification_backoff", attempt=attempt, delay_s=round(delay, 1))
+        await sleep(delay)
+    if outcome is Outcome.COMPLETE:
+        if message_id:
+            await sent.record(message_id)
+        return Outcome.COMPLETE
+    log.warning("notification_dead_lettered", retries_exhausted=outcome is Outcome.RETRY)
+    await dead_letter(value, headers)
+    return Outcome.DEAD_LETTER
 
 
 async def run() -> None:
-    from azure.identity.aio import DefaultAzureCredential
-    from azure.servicebus.aio import ServiceBusClient
+    from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+
+    from support_assistant.kafka_client import connection_options, new_credential
 
     settings = get_settings()
-    if not settings.servicebus_namespace_fqdn:
-        raise RuntimeError("SERVICEBUS_NAMESPACE_FQDN is required")
+    if not settings.kafka_bootstrap_servers:
+        raise RuntimeError("KAFKA_BOOTSTRAP_SERVERS is required")
     pool = make_pool(settings)
     await pool.open()
     sender = _sms_sender(settings)
     email_sender = _email_sender(settings)
+    redis = make_redis(settings.redis_url.get_secret_value(), settings)
+    sent = SentLog(redis)
 
     async def lookup(customer_id: str) -> str:
         async with pool.connection() as conn:
@@ -227,27 +280,40 @@ async def run() -> None:
             raw, lookup, sender, lookup_email=lookup_email, send_email=email_sender
         )
 
-    async with (
-        DefaultAzureCredential() as cred,
-        ServiceBusClient(settings.servicebus_namespace_fqdn, cred) as sb,
-    ):
-        async with sb.get_queue_receiver("notifications", max_wait_time=30) as receiver:
-            failed_batches = 0
-            while True:
-                batch = await receiver.receive_messages(max_message_count=10, max_wait_time=30)
-                if await process_batch(receiver, batch, handle):
-                    failed_batches += 1
-                    # Abandoned messages come straight back. Without this pause an outage of a few
-                    # seconds would use up every delivery attempt and dead-letter good messages.
-                    delay = RETRY_BASE_S + backoff_delay(failed_batches, RETRY_BASE_S, RETRY_CAP_S)
-                    log.warning(
-                        "notification_backoff",
-                        failed_batches=failed_batches,
-                        delay_s=round(delay, 1),
-                    )
-                    await asyncio.sleep(delay)
-                elif batch:
-                    failed_batches = 0
+    async with new_credential() as credential:
+        options = connection_options(settings.kafka_bootstrap_servers, credential)
+        producer = AIOKafkaProducer(**options, acks="all")
+        consumer = AIOKafkaConsumer(
+            settings.kafka_topic,
+            **options,
+            group_id=settings.kafka_consumer_group,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",  # a new group must not skip waiting notifications
+            max_poll_records=1,
+        )
+
+        async def dead_letter(value: bytes, headers: Headers) -> None:
+            await producer.send_and_wait(
+                settings.kafka_dead_letter_topic, value, headers=list(headers)
+            )
+
+        await producer.start()
+        try:
+            await consumer.start()
+            try:
+                async for m in consumer:
+                    await process_message(m.value or b"", m.headers, handle, dead_letter, sent)
+                    partition = TopicPartition(m.topic, m.partition)
+                    try:
+                        await consumer.commit({partition: m.offset + 1})
+                    except Exception as exc:  # noqa: BLE001 - e.g. a rebalance: it is read again
+                        log.error("notification_commit_failed", **error_fields(exc))
+            finally:
+                await consumer.stop()
+        finally:
+            await producer.stop()
+            await redis.aclose()
+            await pool.close()
 
 
 if __name__ == "__main__":

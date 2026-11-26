@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -45,7 +44,7 @@ from pgvector.psycopg import register_vector_async
 from support_assistant.config import get_settings
 from support_assistant.db import Pool, make_pool
 from support_assistant.docsource import DocumentSource, LocalDirSource, StoreDocumentSource
-from support_assistant.embeddings import HttpEmbedder
+from support_assistant.embeddings import azure_embedder
 from support_assistant.embeddings_lc import LcEmbeddings
 from support_assistant.errors import ExternalServiceUnavailable
 from support_assistant.logs import error_fields
@@ -348,14 +347,7 @@ async def _main(path: str | None) -> int:
     from support_assistant.blobstore import AzureBlobStore
 
     s = get_settings()
-    key = os.environ.get("EMBEDDER_API_KEY", "")
-
-    async def token() -> str:
-        return key
-
-    embedder = HttpEmbedder(
-        s.embedder_url, s.embedding_model, dim=s.embedding_dim, token_provider=token
-    )
+    embedder = azure_embedder(s)
     store: AzureBlobStore | None = None
     source: DocumentSource
     if path:

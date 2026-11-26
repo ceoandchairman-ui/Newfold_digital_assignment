@@ -11,7 +11,7 @@ The 6-hour CronJob stays as a safety net. Both take the same Postgres advisory l
 run at the same time. Nothing here needs cluster access: anyone who may write to the container
 (Entra group docs_writers_object_id) can publish a document just by uploading it.
 
-Why polling and not Event Grid: delivering blob events to the private Service Bus namespace would
+Why polling and not Event Grid: delivering blob events to a private queue or event namespace would
 need that namespace opened to trusted public services. A listing every 30 s costs almost nothing and
 keeps every service private.
 """
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 
@@ -91,21 +90,14 @@ async def run() -> None:
     from support_assistant.blobstore import AzureBlobStore
     from support_assistant.db import make_pool
     from support_assistant.docsource import StoreDocumentSource
-    from support_assistant.embeddings import HttpEmbedder
+    from support_assistant.embeddings import azure_embedder
     from support_assistant.embeddings_lc import LcEmbeddings
     from support_assistant.indexer import exclusive_index_run, index_source
 
     s = get_settings()
     if not s.docs_storage_account:
         raise RuntimeError("DOCS_STORAGE_ACCOUNT is required")
-    key = os.environ.get("EMBEDDER_API_KEY", "")
-
-    async def token() -> str:
-        return key
-
-    embedder = HttpEmbedder(
-        s.embedder_url, s.embedding_model, dim=s.embedding_dim, token_provider=token
-    )
+    embedder = azure_embedder(s)
     store = AzureBlobStore(s.docs_storage_account, s.docs_container)
     registry = build_registry(s)
     release = search_release(s)

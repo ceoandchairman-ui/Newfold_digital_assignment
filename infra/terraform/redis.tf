@@ -116,8 +116,9 @@ resource "azurerm_private_endpoint" "redis" {
 locals {
   redis_access = {
     checkpoint = ["orchestrator"]
-    cache      = ["fat-backend", "mcp-servers"] # window + verified flags; device simulation state
-    toolcache  = ["agent-director", "agent-troubleshooter", "orchestrator"]
+    # window + verified flags; device simulation state; ids of notifications already sent
+    cache     = ["fat-backend", "mcp-servers", "notification-worker"]
+    toolcache = ["agent-director", "agent-troubleshooter", "orchestrator"]
   }
   redis_access_pairs = merge([
     for cluster, workloads in local.redis_access : {

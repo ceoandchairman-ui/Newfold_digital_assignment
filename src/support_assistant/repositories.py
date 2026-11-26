@@ -121,6 +121,18 @@ async def recent_sessions(conn: Conn, customer_id: str, days: int, limit: int) -
     return await cur.fetchall()
 
 
+async def has_earlier_history(conn: Conn, customer_id: str, session_id: str) -> bool:
+    """Is anything stored from before this session: another conversation or a saved episode?"""
+    cur = await conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM session_conversations"
+        " WHERE customer_id = %s AND session_id <> %s)"
+        " OR EXISTS (SELECT 1 FROM customer_episodes WHERE customer_id = %s) AS found",
+        (customer_id, session_id, customer_id),
+    )
+    row = await cur.fetchone()
+    return bool(row and row["found"])
+
+
 async def recent_payment_count(conn: Conn, customer_id: str, bill_id: str, minutes: int) -> int:
     """Velocity query for the evaluator's duplicate-payment check (E4-6)."""
     cur = await conn.execute(

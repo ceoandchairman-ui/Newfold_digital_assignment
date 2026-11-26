@@ -1,10 +1,12 @@
 import json
 import math
+from pathlib import Path
 
 import httpx
 import pytest
 
-from support_assistant.embeddings import FakeEmbedder, HttpEmbedder
+from support_assistant.config import Settings
+from support_assistant.embeddings import FakeEmbedder, HttpEmbedder, azure_embedder
 from support_assistant.errors import ExternalServiceUnavailable, ValidationError
 
 
@@ -70,3 +72,58 @@ async def test_http_embedder_maps_persistent_failure():
     with pytest.raises(ExternalServiceUnavailable):
         await emb.embed(["a"])
     await emb.aclose()
+
+
+REQUIRED = {"_env_file": None, "database_url": "postgresql://x", "redis_url": "redis://x"}
+
+
+async def test_azure_embedder_calls_the_deployment_with_an_entra_token(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class Credential:
+        async def get_token(self, scope):
+            seen["scope"] = scope
+            return type("Token", (), {"token": "entra-token"})()
+
+        async def close(self):
+            seen["closed"] = True
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers["Authorization"]
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1] * 1024}]})
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr("azure.identity.aio.DefaultAzureCredential", Credential)
+    monkeypatch.setattr(
+        "support_assistant.embeddings.httpx.AsyncClient",
+        lambda **kw: client(**{**kw, "transport": httpx.MockTransport(handle)}),
+    )
+    emb = azure_embedder(
+        Settings(**REQUIRED, azure_openai_endpoint="https://acct.openai.azure.com/")
+    )
+    await emb.embed(["hello"])
+    await emb.aclose()
+    assert seen == {
+        "scope": "https://cognitiveservices.azure.com/.default",
+        "url": "https://acct.openai.azure.com/openai/v1/embeddings",
+        "auth": "Bearer entra-token",
+        "body": {"model": "text-embedding-3-large", "input": ["hello"], "dimensions": 1024},
+        "closed": True,
+    }
+
+
+def test_azure_embedder_refuses_to_start_without_an_endpoint():
+    with pytest.raises(RuntimeError, match="AZURE_OPENAI_ENDPOINT"):
+        azure_embedder(Settings(**REQUIRED, azure_openai_endpoint=None))
+
+
+def test_terraform_deploys_the_embedding_model_and_lets_every_embedding_service_call_it():
+    root = Path(__file__).resolve().parents[1] / "infra" / "terraform"
+    model = Settings.model_fields["embedding_model"].default
+    assert f'"{model}" = {{' in (root / "envs" / "prod.tfvars").read_text(encoding="utf-8")
+    block = (root / "aks.tf").read_text(encoding="utf-8").split("openai_users = toset([")[1]
+    users = block.split("])")[0]
+    for workload in ("fat-backend", "retrieval", "indexer", "index-worker", "orchestrator"):
+        assert f'"{workload}"' in users

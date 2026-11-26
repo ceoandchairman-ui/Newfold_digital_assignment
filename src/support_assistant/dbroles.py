@@ -51,7 +51,11 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
     # Answer-time search and reranking: the only service that reads the knowledge base to answer.
     "retrieval": [("SELECT", ["knowledge_base_chunks"])],
     # The audit trail.
-    "orchestrator": [("INSERT", ["audit_events"])],
+    # history_check also reads (never writes) the customer's earlier conversations and episodes.
+    "orchestrator": [
+        ("INSERT", ["audit_events"]),
+        ("SELECT", ["session_conversations", "customer_episodes"]),
+    ],
     # Looks up a customer's phone and email to send a notification.
     "notification-worker": [("SELECT", ["customers"])],
     # Agents without direct database access, and the bootstrap admin itself:

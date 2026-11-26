@@ -293,35 +293,98 @@ def test_a_repeat_of_one_event_has_one_id_and_a_new_event_has_another():
     assert len(none) == 2
 
 
-class Receiver:
-    def __init__(self, settle_fails: bool = False) -> None:
-        self.done: list[tuple[str, str]] = []
-        self.settle_fails = settle_fails
+class SentRedis:
+    def __init__(self, down: bool = False) -> None:
+        self.keys: dict[str, int] = {}
+        self.down = down
 
-    async def complete_message(self, m):
-        if self.settle_fails:
-            raise RuntimeError("lock lost")
-        self.done.append(("complete", m))
+    async def exists(self, key):
+        if self.down:
+            raise ConnectionError("redis")
+        return key in self.keys
 
-    async def abandon_message(self, m):
-        self.done.append(("abandon", m))
+    async def set(self, key, value, ex):
+        if self.down:
+            raise ConnectionError("redis")
+        self.keys[key] = ex
 
-    async def dead_letter_message(self, m, reason):
-        self.done.append(("dead", m))
+
+class Delivery:
+    """Runs one message through the worker, recording pauses, attempts and dead letters."""
+
+    def __init__(self, *outcomes, redis: SentRedis | None = None, dlq_down: bool = False) -> None:
+        self.outcomes = list(outcomes)
+        self.handled: list[str] = []
+        self.dead: list[bytes] = []
+        self.pauses: list[float] = []
+        self.sent = worker.SentLog(redis or SentRedis())
+        self.dlq_down = dlq_down
+
+    async def handle(self, raw: str) -> worker.Outcome:
+        self.handled.append(raw)
+        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def dead_letter(self, value, headers) -> None:
+        if self.dlq_down:
+            raise ConnectionError("broker")
+        self.dead.append(value)
+
+    async def pause(self, seconds: float) -> None:
+        self.pauses.append(seconds)
+
+    async def run(self, message_id: str = "m1") -> worker.Outcome:
+        return await worker.process_message(
+            b"body",
+            [("message_id", message_id.encode())],
+            self.handle,
+            self.dead_letter,
+            self.sent,
+            sleep=self.pause,
+        )
 
 
-async def test_the_worker_survives_a_crashing_message_and_asks_for_a_pause():
-    async def handle(raw: str) -> worker.Outcome:
-        if raw == "db-down":
-            raise ConnectionError("db")
-        return worker.Outcome.COMPLETE
+async def test_a_repeated_message_is_sent_once():
+    redis = SentRedis()
+    first = Delivery(worker.Outcome.COMPLETE, redis=redis)
+    again = Delivery(worker.Outcome.COMPLETE, redis=redis)
+    assert await first.run() is await again.run() is worker.Outcome.COMPLETE
+    assert first.handled == ["body"] and again.handled == []
+    assert redis.keys == {"notification:sent:m1": worker.DEDUPE_TTL_S}
 
-    receiver = Receiver()
-    assert await worker.process_batch(receiver, ["db-down", "ok"], handle) is True
-    assert receiver.done == [("abandon", "db-down"), ("complete", "ok")]
-    assert await worker.process_batch(Receiver(), ["ok"], handle) is False
-    # a message whose lock was lost does not stop the rest
-    assert await worker.process_batch(Receiver(settle_fails=True), ["a", "b"], handle) is False
+
+async def test_redis_being_down_never_blocks_a_notification():
+    d = Delivery(worker.Outcome.COMPLETE, redis=SentRedis(down=True))
+    assert await d.run() is worker.Outcome.COMPLETE
+    assert d.handled == ["body"] and d.dead == []
+
+
+async def test_a_crash_is_retried_with_a_pause_until_it_works():
+    d = Delivery(ConnectionError("db"), worker.Outcome.RETRY, worker.Outcome.COMPLETE)
+    assert await d.run() is worker.Outcome.COMPLETE
+    assert len(d.handled) == 3 and d.dead == []
+    assert len(d.pauses) == 2 and all(p >= worker.RETRY_BASE_S for p in d.pauses)
+
+
+async def test_retries_are_bounded_then_the_message_is_dead_lettered():
+    d = Delivery(worker.Outcome.RETRY)
+    assert await d.run() is worker.Outcome.DEAD_LETTER
+    assert len(d.handled) == worker.MAX_ATTEMPTS and len(d.pauses) == worker.MAX_ATTEMPTS - 1
+    assert d.dead == [b"body"]
+
+
+async def test_a_bad_message_is_dead_lettered_at_once_and_never_marked_sent():
+    redis = SentRedis()
+    d = Delivery(worker.Outcome.DEAD_LETTER, redis=redis)
+    assert await d.run() is worker.Outcome.DEAD_LETTER
+    assert d.dead == [b"body"] and d.pauses == [] and redis.keys == {}
+
+
+async def test_a_failed_dead_letter_raises_so_the_offset_is_not_committed():
+    with pytest.raises(ConnectionError):
+        await Delivery(worker.Outcome.DEAD_LETTER, dlq_down=True).run()
 
 
 # --- re-embedding ---------------------------------------------------------------------------------

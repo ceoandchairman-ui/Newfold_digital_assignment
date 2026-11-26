@@ -25,7 +25,7 @@ def build_comms_server(outbox: Outbox, *, host: str = "0.0.0.0", port: int = COM
     async def send_notification(
         customer_id: str, channel: str, template: str, event_id: str | None = None
     ) -> dict[str, Any]:
-        """Queue an email or SMS (Service Bus in Azure; log-only while the stub flags are set)."""
+        """Queue an email or SMS (Kafka via Event Hubs in Azure; log-only while the stub flags are set)."""
         if channel not in CHANNELS:
             return safe(ValidationError("unsupported channel"))
         try:

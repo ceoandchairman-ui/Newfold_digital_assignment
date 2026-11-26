@@ -203,14 +203,10 @@ def api(monkeypatch):
         calls.append(json.loads(request.content))
         return httpx.Response(200, json={"reply": "ok"})
 
-    async def fake_search(pool, embedder, *, customer_id, query, top_k=3):
-        return [{"summary": "no signal last week", "outcome": "resolved"}]
-
     async def fake_save(pool, embedder, **kw):
         saved.append(kw)
         return True
 
-    monkeypatch.setattr(backend, "search_episodes", fake_search)
     monkeypatch.setattr(backend, "save_episode", fake_save)
     backend.app.state.redis = KV()
     backend.app.state.pool = Pool(
@@ -254,23 +250,6 @@ async def test_exactly_one_identifier_is_required(api):
     neither = {"session_id": "S1", "date_of_birth": "1990-05-01"}
     assert (await client.post("/verify", json=both)).status_code == 422
     assert (await client.post("/verify", json=neither)).status_code == 422
-
-
-async def test_first_turn_carries_past_episodes_and_later_turns_do_not(api):
-    client, calls, _ = api
-    await client.post(
-        "/verify",
-        json={"session_id": "S1", "full_name": "Ada Lovelace", "date_of_birth": "1990-05-01"},
-    )
-    await client.post("/chat", json={"session_id": "S1", "message": "no signal again"})
-    assert (
-        calls[0]["messages"][0]["role"] == "system"
-        and "no signal last week" in calls[0]["messages"][0]["content"]
-    )
-
-    backend.app.state.memory = Memory([{"role": "user", "content": "earlier"}])
-    await client.post("/chat", json={"session_id": "S1", "message": "still no signal"})
-    assert all(m["role"] != "system" for m in calls[1]["messages"])
 
 
 async def test_ending_a_session_stores_an_episode_and_closes_the_session(api):

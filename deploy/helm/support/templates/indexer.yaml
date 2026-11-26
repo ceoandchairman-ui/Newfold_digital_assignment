@@ -36,7 +36,7 @@ spec:
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               command: ["python", "-m", "support_assistant.indexer"]
               envFrom:
-                - secretRef: { name: support-env }   # includes EMBEDDER_API_KEY
+                - secretRef: { name: support-env }
               env:
                 {{- range $k, $v := .Values.commonEnv }}
                 - { name: {{ $k }}, value: {{ $v | quote }} }

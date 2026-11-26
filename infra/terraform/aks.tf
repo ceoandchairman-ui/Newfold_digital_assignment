@@ -83,7 +83,11 @@ locals {
     "db-bootstrap", # runs migrations and creates Postgres roles for the others (pre-deploy hook)
   ])
   openai_users = toset([
-    "fat-backend", # query rewrite and embeddings
+    "fat-backend",  # query rewrite and embeddings
+    "retrieval",    # query embeddings
+    "indexer",      # document embeddings
+    "index-worker", # document embeddings
+    "orchestrator", # history_check: finds relevant past episodes
     "agent-director",
     "agent-troubleshooter",
     "agent-evaluator",

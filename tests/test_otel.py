@@ -192,7 +192,7 @@ async def test_every_node_is_a_span_and_an_approval_pause_is_not_an_error():
     assert approve and approve[-1].attributes["support.awaiting_approval"] is True
     assert approve[-1].status.status_code is not StatusCode.ERROR
     assert {
-        "graph.node auth_gate",
+        "graph.node history_check",
         "graph.node route",
         "graph.node billing_gen",
         "graph.node eval_agent",

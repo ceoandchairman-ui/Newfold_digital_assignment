@@ -1,5 +1,5 @@
 # Secrets and database identity wiring: everything the pods need at start-up, created by Terraform
-# so nothing is typed in by hand (except the embedder API key, which comes from a third party).
+# so nothing is typed in by hand.
 #
 # No passwords exist anywhere: Postgres and Redis use Entra tokens (db.py, redis_factory.py). The
 # secrets below hold only addresses (host, database, port, TLS).

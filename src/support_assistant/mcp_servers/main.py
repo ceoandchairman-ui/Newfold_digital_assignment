@@ -34,7 +34,7 @@ from support_assistant.mcp_servers.drive import build_drive_server
 from support_assistant.mcp_servers.gmail import build_gmail_server
 from support_assistant.mcp_servers.stripe_server import build_stripe_server
 from support_assistant.mcp_servers.twilio_sms import build_twilio_server
-from support_assistant.notifications import LogOutbox, Outbox, ServiceBusOutbox
+from support_assistant.notifications import KafkaOutbox, LogOutbox, Outbox
 from support_assistant.redis_factory import make_redis
 from support_assistant.registry import build_registry
 from support_assistant.releases import ReleaseGate, tools_release
@@ -46,11 +46,9 @@ log = structlog.get_logger()
 
 
 def build_outbox(settings: Settings) -> Outbox:
-    """Service Bus when configured and not in stub mode; otherwise log-only."""
-    if settings.servicebus_namespace_fqdn and not (
-        settings.use_stub_sms and settings.use_stub_email
-    ):
-        return ServiceBusOutbox(settings.servicebus_namespace_fqdn)
+    """Kafka when configured and not in stub mode; otherwise log-only."""
+    if settings.kafka_bootstrap_servers and not (settings.use_stub_sms and settings.use_stub_email):
+        return KafkaOutbox(settings.kafka_bootstrap_servers, settings.kafka_topic)
     return LogOutbox()
 
 

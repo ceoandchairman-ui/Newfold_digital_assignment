@@ -32,28 +32,33 @@ edge_origin_host = "api.example.invalid" # replace: the backend ingress hostname
 
 alert_emails = {} # replace: on-call recipients
 
+# Every deployment is DataZoneStandard: eastus2 does not list "Standard" for the gpt-5.4 models,
+# and DataZoneStandard keeps processing inside the US data zone (GlobalStandard would not).
+# Availability and quota were checked on 2026-11-25.
+#
 # One deployment per job (src/support_assistant/models.py). The names must match the defaults there
 # (llm_*_deployment settings); the model behind each name is chosen here, so swapping a model is a
 # change to this block only.
 #
 # Models and versions are the starting shortlist from Microsoft's catalog (GA, pages dated
-# 2026-11). The GPT-4.1 family is Deprecated, so it is not used. NOT VERIFIED: that these models
-# are offered in the chosen region (D15), the quota (capacity_k, thousand tokens per minute; the
-# numbers below are placeholders to be replaced after a quota request), and whether the region
-# needs sku_name = "GlobalStandard". Choose the final models by running each candidate through the
-# journey, red-team and retrieval evaluations.
+# 2026-11). The GPT-4.1 family is Deprecated, so it is not used. capacity_k (thousand tokens per
+# minute) is within the quota but not yet sized from traffic. Choose the final models by running
+# each candidate through the journey, red-team and retrieval evaluations.
 openai_deployments = {
   # support_agent: the conversation (route, generic answers). Fast and cheap, low reasoning effort.
-  "chat-support" = { model_name = "gpt-5.4-mini", model_version = "2026-03-17", capacity_k = 50 }
+  "chat-support" = { model_name = "gpt-5.4-mini", model_version = "2026-03-17", capacity_k = 50, sku_name = "DataZoneStandard" }
   # support_agent: reasoning and task questions (plans, tool use, payment proposals).
-  "chat-planner" = { model_name = "gpt-5.4", model_version = "2026-03-05", capacity_k = 25 }
+  "chat-planner" = { model_name = "gpt-5.4", model_version = "2026-03-05", capacity_k = 25, sku_name = "DataZoneStandard" }
   # fat backend: query rewrite. A 64-token job, so the smallest model.
-  "chat-rewrite" = { model_name = "gpt-5.4-nano", model_version = "2026-03-17", capacity_k = 20 }
+  "chat-rewrite" = { model_name = "gpt-5.4-nano", model_version = "2026-03-17", capacity_k = 20, sku_name = "DataZoneStandard" }
   # troubleshoot_agent: multi-step diagnosis.
-  "chat-troubleshooter" = { model_name = "gpt-5.4", model_version = "2026-03-05", capacity_k = 25 }
+  "chat-troubleshooter" = { model_name = "gpt-5.4", model_version = "2026-03-05", capacity_k = 25, sku_name = "DataZoneStandard" }
   # eval_agent: LLM-as-judge groundedness check. Prefer a different model family than the
   # generators once one is available, because judges favor their own family.
-  "chat-judge" = { model_name = "gpt-5.4-mini", model_version = "2026-03-17", capacity_k = 20 }
+  "chat-judge" = { model_name = "gpt-5.4-mini", model_version = "2026-03-17", capacity_k = 20, sku_name = "DataZoneStandard" }
+  # Embeddings: documents, search queries and episodic memory. The name must equal the
+  # embedding_model setting. Changing the model means every document is embedded again.
+  "text-embedding-3-large" = { model_name = "text-embedding-3-large", model_version = "1", capacity_k = 100, sku_name = "DataZoneStandard" }
 }
 
 # From infra/bootstrap outputs.

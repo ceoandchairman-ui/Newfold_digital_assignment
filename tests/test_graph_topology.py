@@ -11,11 +11,11 @@ from support_assistant.orchestrator.graph import build_graph
 
 # The main graph: three agents (each a subgraph) and the plain-code gates around them.
 NODES = {
-    "auth_gate", "deny", "support_agent", "troubleshoot_agent", "eval_agent", "approve", "pay",
+    "history_check", "deny", "support_agent", "troubleshoot_agent", "eval_agent", "approve", "pay",
     "egress",
 }  # fmt: skip
 EDGES = {
-    ("auth_gate", "deny"), ("auth_gate", "support_agent"),
+    ("history_check", "support_agent"),
     ("support_agent", "troubleshoot_agent"), ("support_agent", "eval_agent"),
     ("support_agent", "egress"),
     ("troubleshoot_agent", "eval_agent"), ("troubleshoot_agent", "egress"),
@@ -88,7 +88,8 @@ def test_the_main_graph_has_exactly_the_three_agents_and_the_code_around_them():
     assert set(g.nodes) - {"__start__", "__end__"} == NODES
     edges = {(e.source, e.target) for e in g.edges}
     assert {(s, t) for s, t in edges if s != "__start__" and t != "__end__"} == EDGES
-    assert ("__start__", "auth_gate") in edges and ("egress", "__end__") in edges
+    assert {("__start__", "deny"), ("__start__", "history_check")} <= edges
+    assert ("egress", "__end__") in edges
 
 
 def test_the_support_agent_is_one_agent_made_of_a_router_and_three_generators():

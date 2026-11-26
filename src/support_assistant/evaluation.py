@@ -61,21 +61,15 @@ async def _main(eval_path: str) -> None:
 
     from support_assistant.config import get_settings
     from support_assistant.db import make_pool
-    from support_assistant.embeddings import HttpEmbedder
+    from support_assistant.embeddings import azure_embedder
     from support_assistant.reranker import HttpReranker
     from support_assistant.services.retrieval import search_kb
 
     s = get_settings()
     pool = make_pool(s)
     await pool.open()
-    key = os.environ.get("EMBEDDER_API_KEY", "")
-
-    async def token() -> str:
-        return key
-
-    embedder = HttpEmbedder(
-        s.embedder_url, s.embedding_model, dim=s.embedding_dim, token_provider=token
-    )
+    embedder = azure_embedder(s)
+    key = os.environ.get("RERANKER_API_KEY", "")
     reranker = HttpReranker(s.reranker_url, s.reranker_model, key) if s.reranker_url else None
     cases = load_cases(Path(eval_path))
 

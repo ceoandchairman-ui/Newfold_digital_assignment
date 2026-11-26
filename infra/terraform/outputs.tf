@@ -27,8 +27,8 @@ output "key_vault_uri" {
   value = azurerm_key_vault.main.vault_uri
 }
 
-output "servicebus_namespace" {
-  value = azurerm_servicebus_namespace.main.name
+output "eventhubs_namespace" {
+  value = azurerm_eventhub_namespace.main.name
 }
 
 # Client IDs are injected into each ServiceAccount's workload-identity annotation by Helm.

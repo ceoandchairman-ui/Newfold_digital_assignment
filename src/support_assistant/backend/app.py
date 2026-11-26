@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,12 +25,10 @@ from support_assistant.config import get_settings
 from support_assistant.content_safety import PromptShields, local_shield
 from support_assistant.context import (
     compact_history,
-    episode_context,
-    history_context,
     summarize_session,
 )
 from support_assistant.db import make_pool
-from support_assistant.embeddings import HttpEmbedder
+from support_assistant.embeddings import azure_embedder
 from support_assistant.errors import (
     AuthenticationError,
     ConflictError,
@@ -68,7 +65,7 @@ from support_assistant.security import (
     subject_key,
     valid_session_id,
 )
-from support_assistant.services.episodes import save_episode, search_episodes
+from support_assistant.services.episodes import save_episode
 from support_assistant.telemetry import instrument_fastapi, setup_telemetry
 from support_assistant.uploads import UploadService
 
@@ -141,17 +138,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         app.state.shields = PromptShields(s.content_safety_endpoint, safety_token)
     app.state.http = httpx.AsyncClient(base_url=s.orchestrator_url, timeout=60.0)
-    # Episodic memory needs the embedder API; without it, episodes are simply skipped.
-    api_key = os.environ.get("EMBEDDER_API_KEY", "")
-
-    async def token() -> str:
-        return api_key
-
-    app.state.embedder = (
-        HttpEmbedder(s.embedder_url, s.embedding_model, dim=s.embedding_dim, token_provider=token)
-        if s.embedder_url
-        else None
-    )
+    # Episodic memory needs embeddings; without an OpenAI endpoint, episodes are simply skipped.
+    app.state.embedder = azure_embedder(s) if s.azure_openai_endpoint else None
     setup_telemetry("fat-backend")
     # Query rewrite is optional: without an OpenAI endpoint the raw message is used.
     app.state.rewrite = build_rewrite_chain(s) if s.azure_openai_endpoint else None
@@ -426,35 +414,6 @@ async def _chat_turn(body: ChatBody, customer_id: str) -> dict[str, Any]:
         return {"reply": BUDGET_EXCEEDED_MESSAGE, "pending_approval": None, "escalated": False}
     history = compact_history(await app.state.memory.load(customer_id, body.session_id))
     messages = [*history, {"role": "user", "content": body.message}]
-    # E6-1: on a session's FIRST turn only (one embedding call per session, not per turn),
-    # hydrate relevant past episodes for this customer as context.
-    embedder = getattr(app.state, "embedder", None)
-    if not history and embedder is not None:
-        try:
-            past = await search_episodes(
-                app.state.pool, embedder, customer_id=customer_id, query=body.message
-            )
-        except Exception as exc:  # noqa: BLE001 - memory is a bonus, never a blocker
-            log.warning("episode_recall_failed", **error_fields(exc))
-            past = []
-        if context := episode_context(past):
-            messages = [{"role": "system", "content": context}, *messages]
-    # E6-1: the first turn of a session also gets a short note about the customer's other
-    # conversations from the last few days, so they do not have to repeat themselves.
-    settings = getattr(app.state, "s", None)  # unset only where lifespan is bypassed (tests)
-    days = getattr(settings, "history_days", 0)
-    max_sessions = getattr(settings, "history_max_sessions", 5)
-    if not history and days:
-        try:
-            async with app.state.pool.connection() as conn:
-                rows = await repo.recent_sessions(conn, customer_id, days, max_sessions + 1)
-            prior = [r for r in rows if r["session_id"] != body.session_id]
-            note = history_context(prior[:max_sessions])
-        except Exception as exc:  # noqa: BLE001 - history is a bonus, never a blocker
-            log.warning("recent_history_failed", **error_fields(exc))
-            note = ""
-        if note:
-            messages = [{"role": "system", "content": note}, *messages]
     # A cheap keyword guess; the graph's support_agent makes the real routing decision. It only
     # tells us whether a retrieval is likely, so we pay for a rewrite just for those turns.
     hint = (await KeywordRouteClassifier().classify(body.message)).route
@@ -468,7 +427,6 @@ async def _chat_turn(body: ChatBody, customer_id: str) -> dict[str, Any]:
         route_hint=hint,
         rewritten=query is not None,
         history_messages=len(history),
-        memory_notes=sum(1 for m in messages if m.get("role") == "system"),
     )
     result = await _orchestrate(
         "/invoke",

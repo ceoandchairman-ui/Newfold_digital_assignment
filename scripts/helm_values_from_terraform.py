@@ -29,7 +29,7 @@ REQUIRED_OUTPUTS = (
     "uploads_container",
     "openai_endpoint",
     "content_safety_endpoint",
-    "servicebus_namespace",
+    "eventhubs_namespace",
     "cosmos_endpoint",
 )
 
@@ -67,7 +67,7 @@ def build_values(outputs: dict[str, Any], environment: str) -> dict[str, Any]:
 
     not_deployments = {HOOK_IDENTITY, *JOB_IDENTITIES}
     services = {name: identity(name) for name in sorted(client_ids) if name not in not_deployments}
-    servicebus = _value(outputs, "servicebus_namespace")
+    eventhubs = _value(outputs, "eventhubs_namespace")
 
     return {
         "environment": environment,
@@ -84,7 +84,7 @@ def build_values(outputs: dict[str, Any], environment: str) -> dict[str, Any]:
         "endpoints": {
             "AZURE_OPENAI_ENDPOINT": _value(outputs, "openai_endpoint"),
             "CONTENT_SAFETY_ENDPOINT": _value(outputs, "content_safety_endpoint"),
-            "SERVICEBUS_NAMESPACE_FQDN": f"{servicebus}.servicebus.windows.net",
+            "KAFKA_BOOTSTRAP_SERVERS": f"{eventhubs}.servicebus.windows.net:9093",
             "DOCS_STORAGE_ACCOUNT": _value(outputs, "docs_storage_account"),
             "DOCS_CONTAINER": _value(outputs, "docs_container"),
             "UPLOADS_STORAGE_ACCOUNT": _value(outputs, "uploads_storage_account"),

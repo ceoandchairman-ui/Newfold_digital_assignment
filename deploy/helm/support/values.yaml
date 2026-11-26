@@ -170,5 +170,5 @@ indexer:
   schedule: "0 */6 * * *"
 
 # Settings that are addresses, delivered to every pod as environment variables. Generated from
-# Terraform outputs (scripts/helm_values_from_terraform.py); the pipeline adds EMBEDDER_URL.
+# Terraform outputs (scripts/helm_values_from_terraform.py).
 endpoints: {}

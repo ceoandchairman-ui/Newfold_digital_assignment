@@ -43,7 +43,7 @@ def outputs(**overrides):
         "uploads_container": {"value": "customer-uploads"},
         "openai_endpoint": {"value": "https://oai-x.openai.azure.com/"},
         "content_safety_endpoint": {"value": "https://cs-x.cognitiveservices.azure.com/"},
-        "servicebus_namespace": {"value": "sb-support-dev-abc12"},
+        "eventhubs_namespace": {"value": "evh-support-dev-abc12"},
         "cosmos_endpoint": {"value": "https://cosmos-x.documents.azure.com:443/"},
     }
     out.update(overrides)
@@ -81,7 +81,7 @@ def test_every_address_a_service_needs_is_generated_not_typed():
     assert e == {
         "AZURE_OPENAI_ENDPOINT": "https://oai-x.openai.azure.com/",
         "CONTENT_SAFETY_ENDPOINT": "https://cs-x.cognitiveservices.azure.com/",
-        "SERVICEBUS_NAMESPACE_FQDN": "sb-support-dev-abc12.servicebus.windows.net",
+        "KAFKA_BOOTSTRAP_SERVERS": "evh-support-dev-abc12.servicebus.windows.net:9093",
         "DOCS_STORAGE_ACCOUNT": "stsupportdocsdev",
         "DOCS_CONTAINER": "knowledge-base",
         "UPLOADS_STORAGE_ACCOUNT": "stsupportupldev",
@@ -108,7 +108,7 @@ def test_the_endpoint_names_match_the_settings_the_services_actually_read():
         "docs_storage_account",
         "uploads_storage_account",
         "openai_endpoint",
-        "servicebus_namespace",
+        "eventhubs_namespace",
         "cosmos_endpoint",
     ],
 )
