@@ -75,7 +75,7 @@ jobs:
       TF_VAR_pg_admin_type: ${{ vars.PG_ADMIN_TYPE || 'User' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
