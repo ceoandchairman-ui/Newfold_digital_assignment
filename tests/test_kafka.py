@@ -84,3 +84,12 @@ def test_the_worker_may_use_the_redis_cluster_it_deduplicates_in():
     )
     line = next(x for x in tf.splitlines() if re.match(r"\s*cache\s*=\s*\[", x))
     assert '"notification-worker"' in line
+
+
+def test_a_persisted_redis_cluster_always_has_high_availability():
+    # Azure refuses persistence on a database without it, and only `apply` finds out
+    tf = (Path(__file__).resolve().parents[1] / "infra" / "terraform" / "redis.tf").read_text(
+        encoding="utf-8"
+    )
+    line = next(x for x in tf.splitlines() if x.strip().startswith("highAvailability"))
+    assert "each.value.persistence || var.redis_high_availability" in line

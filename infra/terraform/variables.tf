@@ -73,7 +73,7 @@ variable "pg_admin_type" {
 variable "redis_high_availability" {
   type        = bool
   default     = false
-  description = "Zone-redundant Azure Managed Redis. Needs usable availability zones in the region; fixed at creation."
+  description = "High availability for the Azure Managed Redis clusters without persistence. The persisted checkpoint cluster always has it."
 }
 
 variable "pg_high_availability" {

@@ -52,9 +52,10 @@ resource "azapi_resource" "redis" {
     properties = {
       minimumTlsVersion   = "1.2"
       publicNetworkAccess = "Disabled"
-      # Zone-redundant HA is a switch (redis_high_availability): a subscription without usable
-      # zones in the region makes the create hang and then fail. It cannot be changed afterwards.
-      highAvailability = var.redis_high_availability ? "Enabled" : "Disabled"
+      # Azure rejects persistence without HA, so a persisted cluster always has it. For the
+      # others it is a switch (redis_high_availability): a subscription without usable zones in
+      # the region can make the create hang and then fail.
+      highAvailability = each.value.persistence || var.redis_high_availability ? "Enabled" : "Disabled"
     }
   }
 
