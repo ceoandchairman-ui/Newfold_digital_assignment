@@ -64,7 +64,7 @@ data:
         protocol:
           otlp: { tls: { insecure: true } }   # in-cluster hop, NetworkPolicy-restricted
         resolver:
-          dns: { hostname: otel-sampler-headless.{{ $ns }}.svc.cluster.local, port: 4317 }
+          dns: { hostname: otel-sampler-headless.{{ $ns }}.svc.cluster.local, port: "4317" }   # a string: a number stops the collector
       azuremonitor:
         connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
       prometheus:
