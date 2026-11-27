@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from psycopg import AsyncConnection
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -53,14 +54,21 @@ def connection_kwargs(token_provider: TokenProvider | None, user: str | None = N
     return with_token
 
 
-def make_pool(settings: Settings, token_provider: TokenProvider | None = None) -> Pool:
-    """Create (but do not open) the pool. Call `await pool.open()` at startup."""
+def make_pool(
+    settings: Settings, token_provider: TokenProvider | None = None, dbname: str | None = None
+) -> Pool:
+    """Create (but do not open) the pool. Call `await pool.open()` at startup.
+
+    `dbname` connects to another database on the same server."""
     if token_provider is None and settings.database_entra_auth:
         token_provider = entra_token_provider()
+    conninfo = settings.database_url.get_secret_value()
+    if dbname is not None:
+        conninfo = make_conninfo(conninfo, dbname=dbname)
     return cast(
         Pool,
         AsyncConnectionPool(
-            conninfo=settings.database_url.get_secret_value(),
+            conninfo=conninfo,
             min_size=settings.db_pool_min_size,
             max_size=settings.db_pool_max_size,
             timeout=settings.db_pool_timeout_s,

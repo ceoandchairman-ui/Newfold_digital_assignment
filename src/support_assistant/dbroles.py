@@ -23,6 +23,7 @@ import sys
 from support_assistant.db import Pool
 
 _SAFE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+ENTRA_ADMIN_DATABASE = "postgres"  # where Azure installs the pgaadauth_* functions
 
 # workload -> list of (privileges, tables)
 GRANTS: dict[str, list[tuple[str, list[str]]]] = {
@@ -105,14 +106,25 @@ def grant_statements(role: str, workload: str) -> list[str]:
     return stmts
 
 
-async def apply_roles(pool: Pool, prefix: str, principals: dict[str, str]) -> dict[str, str]:
-    """Create missing roles and apply grants, in one transaction. Returns {role: 'created'|'kept'}."""
+async def apply_roles(
+    pool: Pool, admin_pool: Pool, prefix: str, principals: dict[str, str]
+) -> dict[str, str]:
+    """Create missing roles, then apply grants. Returns {role: 'created'|'kept'}.
+
+    Azure installs the Entra role functions (pgaadauth_*) only in the `postgres` database, so roles
+    are created through `admin_pool`, connected there. Roles belong to the whole server; grants
+    belong to one database, so they go through `pool`, the application's. Each step is one
+    transaction, and a rerun after a failure between them is safe.
+    """
+    # validate every name before anything goes anywhere near SQL
+    roles = {workload: f"id-{prefix}-{workload}" for workload in principals}
+    for role in roles.values():
+        quote_ident(role)
     outcome: dict[str, str] = {}
-    async with pool.connection() as conn:
+    async with admin_pool.connection() as conn:
         async with conn.transaction():
             for workload, oid in sorted(principals.items()):
-                role = f"id-{prefix}-{workload}"
-                quote_ident(role)  # validate before it goes anywhere near SQL
+                role = roles[workload]
                 row = await (
                     await conn.execute(
                         "SELECT 1 AS present FROM pg_roles WHERE rolname = %s", (role,)
@@ -126,7 +138,10 @@ async def apply_roles(pool: Pool, prefix: str, principals: dict[str, str]) -> di
                     outcome[role] = "created"
                 else:
                     outcome[role] = "kept"
-                for stmt in grant_statements(role, workload):
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            for workload in sorted(principals):
+                for stmt in grant_statements(roles[workload], workload):
                     await conn.execute(stmt)  # identifiers are validated and quoted above
     return outcome
 
@@ -137,11 +152,17 @@ async def _main() -> int:
 
     prefix = os.environ["IDENTITY_PREFIX"]
     principals = parse_principals(os.environ["DB_PRINCIPALS"])
-    pool = make_pool(get_settings())
+    settings = get_settings()
+    pool = make_pool(settings)
+    admin_pool = make_pool(settings, dbname=ENTRA_ADMIN_DATABASE)
     await pool.open()
     try:
-        for role, what in (await apply_roles(pool, prefix, principals)).items():
-            print(f"{what:8} {role}")
+        await admin_pool.open()
+        try:
+            for role, what in (await apply_roles(pool, admin_pool, prefix, principals)).items():
+                print(f"{what:8} {role}")
+        finally:
+            await admin_pool.close()
     finally:
         await pool.close()
     return 0

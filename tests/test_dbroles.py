@@ -3,9 +3,11 @@
 from contextlib import asynccontextmanager
 
 import pytest
+from psycopg.conninfo import conninfo_to_dict
 
 from support_assistant import dbroles
-from support_assistant.db import connection_kwargs
+from support_assistant.config import Settings
+from support_assistant.db import connection_kwargs, make_pool
 
 
 # --- connection user ---------------------------------------------------------------------------------
@@ -133,17 +135,42 @@ class Pool:
 
 async def test_missing_roles_are_created_with_their_object_id_and_existing_ones_kept():
     pool = Pool(existing={"id-support-dev-orchestrator"})
+    admin = Pool(existing={"id-support-dev-orchestrator"})
     out = await dbroles.apply_roles(
-        pool, "support-dev", {"orchestrator": "oid-1", "mcp-servers": "oid-2"}
+        pool, admin, "support-dev", {"orchestrator": "oid-1", "mcp-servers": "oid-2"}
     )
     assert out == {"id-support-dev-orchestrator": "kept", "id-support-dev-mcp-servers": "created"}
-    creates = [p for sql, p in pool.log if "pgaadauth_create_principal_with_oid" in sql]
+    creates = [p for sql, p in admin.log if "pgaadauth_create_principal_with_oid" in sql]
     assert creates == [("id-support-dev-mcp-servers", "oid-2")]  # parameters, never interpolated
+
+
+async def test_roles_are_made_in_the_admin_database_and_grants_in_the_applications():
+    """Azure has the pgaadauth functions only in `postgres`: calling one elsewhere fails."""
+    app, admin = Pool(), Pool()
+    await dbroles.apply_roles(app, admin, "support-dev", {"retrieval": "oid"})
+    assert any("pgaadauth_" in sql for sql, _ in admin.log)
+    assert not any("pgaadauth_" in sql for sql, _ in app.log)
+    assert any(sql.startswith("GRANT") for sql, _ in app.log)
+    assert not any(sql.startswith(("GRANT", "REVOKE")) for sql, _ in admin.log)
+
+
+def test_the_admin_pool_connects_to_another_database_on_the_same_server():
+    settings = Settings(
+        database_url="postgresql://host.example:5432/support?sslmode=require",
+        redis_url="redis://x",
+    )
+    conninfo = make_pool(settings, dbname=dbroles.ENTRA_ADMIN_DATABASE).conninfo
+    assert conninfo_to_dict(conninfo) == {
+        "host": "host.example",
+        "port": "5432",
+        "dbname": "postgres",
+        "sslmode": "require",
+    }
 
 
 async def test_grants_are_applied_for_every_role_even_when_it_already_exists():
     pool = Pool(existing={"id-support-dev-retrieval"})
-    await dbroles.apply_roles(pool, "support-dev", {"retrieval": "oid"})
+    await dbroles.apply_roles(pool, pool, "support-dev", {"retrieval": "oid"})
     sqls = [sql for sql, _ in pool.log]
     assert any(s.startswith("GRANT SELECT ON") for s in sqls) and any(
         s.startswith("REVOKE ALL ON ALL TABLES") for s in sqls
@@ -153,5 +180,5 @@ async def test_grants_are_applied_for_every_role_even_when_it_already_exists():
 async def test_a_bad_prefix_is_rejected_before_any_sql_runs():
     pool = Pool()
     with pytest.raises(ValueError):
-        await dbroles.apply_roles(pool, 'x"; DROP', {"orchestrator": "oid"})
+        await dbroles.apply_roles(pool, pool, 'x"; DROP', {"orchestrator": "oid"})
     assert pool.log == []
