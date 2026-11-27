@@ -1,11 +1,14 @@
 """Smoke test (E11-A5) and migration safety lint (E11-A7)."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 
+from support_assistant.config import Settings
+from support_assistant.security import valid_session_id
 from support_assistant.smoke import check_endpoints, check_journey
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,19 @@ async def test_smoke_journey_needs_a_real_reply():
     async with httpx.AsyncClient(transport=httpx.MockTransport(unverified)) as http:
         res = await check_journey(http, "http://b", "+1", "1990-05-01")
     assert not res.ok and "verify" in res.detail
+
+
+async def test_smoke_journey_uses_a_session_id_the_deployed_backend_accepts():
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["session_id"])
+        return httpx.Response(200, json={"reply": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        await check_journey(http, "http://b", "+1", "1990-05-01")
+    required = Settings.model_fields["min_session_id_length"].default
+    assert sent and all(valid_session_id(session, required) for session in sent)
 
 
 # --- migration lint ----------------------------------------------------------------------------------------

@@ -49,7 +49,8 @@ async def check_endpoints(
 
 
 async def check_journey(http: httpx.AsyncClient, backend: str, phone: str, dob: str) -> Result:
-    session = f"smoke-{uuid.uuid4().hex[:8]}"
+    # Full length: the backend refuses a short, guessable session id (min_session_id_length).
+    session = f"smoke-{uuid.uuid4().hex}"
     try:
         v = await http.post(
             f"{backend}/verify", json={"session_id": session, "phone": phone, "date_of_birth": dob}
