@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 import structlog
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from starlette.applications import Starlette
 
 from support_assistant.config import Settings, get_settings
 from support_assistant.db import make_pool
@@ -75,8 +76,19 @@ async def supervise(
         await sleep(min(2 ** min(restarts, 10), max_backoff_s))
 
 
+def http_app(server: FastMCP) -> Starlette:
+    """The server's HTTP app, safe to run as several replicas behind one Service.
+
+    By default a session lives in the memory of the pod that opened it. The Service may send the
+    next request to another pod, which answers 404, so no agent ever becomes ready. Stateless mode
+    makes every request stand alone. No tool here keeps anything in the session.
+    """
+    server.settings.stateless_http = True
+    return server.streamable_http_app()
+
+
 async def _serve(server: FastMCP, port: int) -> None:
-    app = instrument_asgi(server.streamable_http_app())  # joins the calling agent's trace
+    app = instrument_asgi(http_app(server))  # joins the calling agent's trace
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     await uvicorn.Server(config).serve()
 
