@@ -4,9 +4,10 @@
                   -> embed (LangChain Embeddings) -> upsert into pgvector
 
 Two levels of hashing make re-running cheap and safe:
-  document  SHA-256 of the file. With the metadata registry, an unchanged document indexed with
-            unchanged settings is skipped without being split. The record is only believed if
-            Postgres holds exactly the chunks it lists.
+  document  SHA-256 of the file, kept in `knowledge_documents`. An unchanged document indexed with
+            unchanged settings is skipped without being split. The record is written in the same
+            transaction as the chunks, and only believed if the table holds exactly the chunks it
+            lists.
   chunk     SHA-256 of heading path + content, unique PER DOCUMENT. Only new text is embedded, and
             identical text already embedded with the same model (a renamed or copied document)
             reuses that vector.
@@ -27,13 +28,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 import structlog
 from langchain_core.documents import Document
@@ -41,18 +42,13 @@ from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from pgvector.psycopg import register_vector_async
 
-from support_assistant.config import get_settings
+from support_assistant.config import Settings, get_settings
 from support_assistant.db import Pool, make_pool
 from support_assistant.docsource import DocumentSource, LocalDirSource, StoreDocumentSource
 from support_assistant.embeddings import azure_embedder
 from support_assistant.embeddings_lc import LcEmbeddings
-from support_assistant.errors import ExternalServiceUnavailable
-from support_assistant.logs import error_fields
-from support_assistant.registry import DocumentRecord, Registry, build_registry
-from support_assistant.releases import ReleaseGate, search_release
 
 log = structlog.get_logger()
-T = TypeVar("T")
 
 MAX_CHARS = 1500
 # Change this whenever splitting or hashing changes, so every document is processed again.
@@ -94,6 +90,37 @@ def document_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def indexing_fingerprint(settings: Settings) -> str:
+    """Changes whenever the same text would be stored differently, so it is processed again."""
+    body = {
+        "embedding_model": settings.embedding_model,
+        "embedding_version": settings.embedding_version,
+        "embedding_dim": settings.embedding_dim,
+        "chunker_version": CHUNKER_VERSION,
+        "chunk_max_chars": MAX_CHARS,
+    }
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+
+
+async def _is_unchanged(
+    pool: Pool, source: str, digest: str, fingerprint: str, model: str, version: str
+) -> bool:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT document_hash, indexing_fingerprint, chunk_hashes"
+            " FROM knowledge_documents WHERE source = %s",
+            (source,),
+        )
+        record = await cur.fetchone()
+    return bool(
+        record
+        and record["document_hash"] == digest
+        and record["indexing_fingerprint"] == fingerprint
+        # Never trust the record alone: chunks may have been restored or edited.
+        and await _chunk_hashes_in_db(pool, source, model, version) == set(record["chunk_hashes"])
+    )
+
+
 async def _chunk_hashes_in_db(pool: Pool, source: str, model: str, version: str) -> set[str]:
     async with pool.connection() as conn:
         cur = await conn.execute(
@@ -107,7 +134,8 @@ async def _chunk_hashes_in_db(pool: Pool, source: str, model: str, version: str)
 def build_index_chain(
     pool: Pool, embeddings: LcEmbeddings, model: str, version: str = "1"
 ) -> Runnable[dict[str, Any], dict[str, Any]]:
-    """The indexing pipeline for one document. Input: {"source": str, "text": str}."""
+    """The indexing pipeline for one document. Input: {"source": str, "text": str}, plus an
+    optional "fingerprint" to record the document as indexed with those settings."""
 
     async def split(inp: dict[str, Any]) -> dict[str, Any]:
         distinct: dict[str, RawChunk] = {}
@@ -185,12 +213,32 @@ def build_index_chain(
                     (inp["source"], keep),
                 )
                 removed = cur.rowcount
+                if inp.get("fingerprint"):
+                    await conn.execute(
+                        """
+                        INSERT INTO knowledge_documents
+                          (source, document_hash, indexing_fingerprint, chunk_hashes, size_bytes)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (source) DO UPDATE
+                           SET document_hash = EXCLUDED.document_hash,
+                               indexing_fingerprint = EXCLUDED.indexing_fingerprint,
+                               chunk_hashes = EXCLUDED.chunk_hashes,
+                               size_bytes = EXCLUDED.size_bytes,
+                               indexed_at = now()
+                        """,
+                        (
+                            inp["source"],
+                            document_hash(inp["text"]),
+                            inp["fingerprint"],
+                            sorted(keep),
+                            len(inp["text"].encode()),
+                        ),
+                    )
         return {
             "added": len(fresh),
             "embedded": inp["embedded"],
             "total": len(keep),
             "removed": removed,
-            "chunk_hashes": sorted(keep),
         }
 
     return (
@@ -210,28 +258,6 @@ class IndexReport:
     skipped: dict[str, str]
     documents_unchanged: int = 0
     chunks_embedded: int = 0
-    # Registry calls that failed. Search is still up to date; the records are not, so the run
-    # should be repeated.
-    registry_errors: int = 0
-
-
-class _Records:
-    """The registry as the indexer uses it: after one failure it is left alone for the rest of the
-    run, so an outage costs one timeout and never stops the knowledge base from updating."""
-
-    def __init__(self, registry: Registry | None) -> None:
-        self._registry = registry
-        self.errors = 0
-
-    async def run(self, operation: Callable[[Registry], Awaitable[T]]) -> T | None:
-        if self._registry is None or self.errors:
-            return None
-        try:
-            return await operation(self._registry)
-        except ExternalServiceUnavailable as exc:
-            self.errors += 1
-            log.error("document_registry_unavailable", **error_fields(exc))
-            return None
 
 
 async def index_source(
@@ -240,51 +266,32 @@ async def index_source(
     source: DocumentSource,
     model: str,
     version: str = "1",
-    registry: Registry | None = None,
     fingerprint: str = "",
 ) -> IndexReport:
     """Index every document in `source` and make the knowledge base match it.
+
+    With a `fingerprint` (see indexing_fingerprint) unchanged documents are skipped.
 
     Safety: if the source yields NO documents, nothing is deleted. An empty or failed listing is
     far more likely a storage problem than an intent to erase the whole knowledge base.
 
     Order matters: documents are written BEFORE vanished ones are removed, so a renamed document
-    is searchable throughout. Postgres is written before the registry: if the run stops between
-    the two, the stale record no longer matches and the document is simply processed again.
+    is searchable throughout.
     """
-    if registry is not None and not fingerprint:
-        raise ValueError("a registry needs the indexing fingerprint (releases.search_release)")
     loaded = await source.load()
     chain = build_index_chain(pool, embeddings, model, version)
-    records = _Records(registry)
     added = removed = embedded = unchanged = 0
     for name in loaded.names:
         text = loaded.documents[name]
-        digest = document_hash(text)
-        record = await records.run(lambda r, name=name: r.get_document(name))  # type: ignore[misc]
-        if (
-            record is not None
-            and record.document_hash == digest
-            and record.indexing_fingerprint == fingerprint
-            # Never trust the record alone: the database may have been restored or edited.
-            and await _chunk_hashes_in_db(pool, name, model, version) == set(record.chunk_hashes)
+        if fingerprint and await _is_unchanged(
+            pool, name, document_hash(text), fingerprint, model, version
         ):
             unchanged += 1
             continue
-        result = await chain.ainvoke({"source": name, "text": text})
+        result = await chain.ainvoke({"source": name, "text": text, "fingerprint": fingerprint})
         added += result["added"]
         removed += result["removed"]
         embedded += result["embedded"]
-        if registry is not None:
-            fresh_record = DocumentRecord(
-                source=name,
-                document_hash=digest,
-                indexing_fingerprint=fingerprint,
-                chunk_hashes=result["chunk_hashes"],
-                size_bytes=len(text.encode()),
-                indexed_at=datetime.now(UTC).isoformat(),
-            )
-            await records.run(lambda r, rec=fresh_record: r.put_document(rec))  # type: ignore[misc]
 
     sources_removed = 0
     if loaded.names:  # never prune on an empty listing
@@ -295,10 +302,10 @@ async def index_source(
                     (loaded.names,),
                 )
                 sources_removed = cur.rowcount
-        listed = set(loaded.names)
-        recorded = await records.run(lambda r: r.document_sources()) or []
-        for gone in (s for s in recorded if s not in listed):
-            await records.run(lambda r, gone=gone: r.delete_document(gone))  # type: ignore[misc]
+                await conn.execute(
+                    "DELETE FROM knowledge_documents WHERE NOT (source = ANY(%s))",
+                    (loaded.names,),
+                )
     log.info(
         "knowledge_documents_indexed",
         documents=len(loaded.names),
@@ -306,7 +313,6 @@ async def index_source(
         chunks_added=added,
         chunks_embedded=embedded,
         chunks_removed=removed,
-        registry_errors=records.errors,
     )
     return IndexReport(
         len(loaded.names),
@@ -316,7 +322,6 @@ async def index_source(
         loaded.skipped,
         unchanged,
         embedded,
-        records.errors,
     )
 
 
@@ -358,15 +363,9 @@ async def _main(path: str | None) -> int:
     else:
         print("give a path, or set DOCS_STORAGE_ACCOUNT", file=sys.stderr)
         return 2
-    registry = build_registry(s)
-    release = search_release(s)
     pool = make_pool(s)
     await pool.open()
     try:
-        # Indexing with settings nobody deployed could mix incompatible vectors into search.
-        if not await ReleaseGate(registry, release).check():
-            print("the search settings of this release are not verified; not indexing")
-            return 1
         async with exclusive_index_run(pool) as got:
             if not got:
                 print("another indexing run is active; nothing to do")
@@ -377,8 +376,7 @@ async def _main(path: str | None) -> int:
                 source,
                 s.embedding_model,
                 s.embedding_version,
-                registry=registry,
-                fingerprint=release.version,
+                fingerprint=indexing_fingerprint(s),
             )
         print(
             f"{report.documents} documents ({report.documents_unchanged} unchanged): "
@@ -387,15 +385,10 @@ async def _main(path: str | None) -> int:
         )
         for name, why in report.skipped.items():
             print(f"skipped {name}: {why}")
-        if report.registry_errors:
-            print("document records could not be updated; run again", file=sys.stderr)
-            return 1
         return 0
     finally:
         await embedder.aclose()
         await pool.close()
-        if registry is not None:
-            await registry.aclose()
         if store is not None:
             await store.aclose()
 

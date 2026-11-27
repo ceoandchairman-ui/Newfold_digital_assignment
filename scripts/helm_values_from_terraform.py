@@ -30,7 +30,6 @@ REQUIRED_OUTPUTS = (
     "openai_endpoint",
     "content_safety_endpoint",
     "eventhubs_namespace",
-    "cosmos_endpoint",
 )
 
 # Identities that are NOT Deployments: the pre-deploy hook and the CronJobs.
@@ -89,7 +88,6 @@ def build_values(outputs: dict[str, Any], environment: str) -> dict[str, Any]:
             "DOCS_CONTAINER": _value(outputs, "docs_container"),
             "UPLOADS_STORAGE_ACCOUNT": _value(outputs, "uploads_storage_account"),
             "UPLOADS_CONTAINER": _value(outputs, "uploads_container"),
-            "COSMOS_ENDPOINT": _value(outputs, "cosmos_endpoint"),
         },
     }
 

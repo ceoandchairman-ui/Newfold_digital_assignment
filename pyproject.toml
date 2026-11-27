@@ -46,8 +46,7 @@ dependencies = [
     "opentelemetry-instrumentation-asgi>=0.51b0",
     "azure-storage-blob>=12.19,<13",
     "python-multipart>=0.0.9",
-    # The metadata registry (registry.py). The SDK's async client needs aiohttp.
-    "azure-cosmos>=4.9,<5",
+    # The async clients of the Azure SDKs need it.
     "aiohttp>=3.10,<4",
 ]
 

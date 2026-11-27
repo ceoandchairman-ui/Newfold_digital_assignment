@@ -63,12 +63,6 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     # Raise this to force every document to be embedded again with the same model name.
     embedding_version: str = "1"
-    # The metadata registry (registry.py), Azure Cosmos DB with Entra auth only. Unset = no
-    # registry: nothing is checked or recorded. Production sets REGISTRY_REQUIRED so that a
-    # missing endpoint stops a service instead of silently skipping the checks.
-    cosmos_endpoint: str | None = None
-    cosmos_database: str = "registry"
-    registry_required: bool = False
     # D18: open reranker, applied to the top candidates only. Its key is RERANKER_API_KEY.
     rerank_enabled: bool = False
     reranker_url: str = ""

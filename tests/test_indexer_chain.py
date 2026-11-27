@@ -17,6 +17,9 @@ class FakeCursor:
     def __init__(self, rows=None, rowcount=0):
         self._rows, self.rowcount = rows or [], rowcount
 
+    async def fetchone(self):
+        return self._rows[0] if self._rows else None
+
     async def fetchall(self):
         return self._rows
 
@@ -48,7 +51,17 @@ class FakeConn:
                     if h in wanted and (row["model"], row["version"]) == (model, version)
                 ]
             )
-        if sql.startswith("INSERT"):
+        if sql.startswith("INSERT INTO knowledge_documents"):
+            source, digest, fingerprint, chunk_hashes, size = params
+            self.store["record_writes"] += 1
+            self.store["documents"][source] = {
+                "document_hash": digest,
+                "indexing_fingerprint": fingerprint,
+                "chunk_hashes": chunk_hashes,
+                "size_bytes": size,
+            }
+            return FakeCursor()
+        if sql.startswith("INSERT INTO knowledge_base_chunks"):
             assert "ON CONFLICT (source, content_hash) DO UPDATE" in sql
             source, section_id, _, _, content_hash, embedding, model, version = params
             self.store["inserts"].append(params)
@@ -69,6 +82,15 @@ class FakeConn:
         if sql.startswith("DELETE FROM knowledge_base_chunks WHERE NOT (source = ANY"):
             (sources,) = params
             return self._delete(lambda s, h: s not in sources)
+        documents: dict = self.store["documents"]
+        if sql.startswith("SELECT document_hash, indexing_fingerprint, chunk_hashes"):
+            (source,) = params
+            return FakeCursor([documents[source]] if source in documents else [])
+        if sql.startswith("DELETE FROM knowledge_documents WHERE NOT (source = ANY"):
+            (sources,) = params
+            for gone in [s for s in documents if s not in sources]:
+                del documents[gone]
+            return FakeCursor()
         raise AssertionError(f"unexpected SQL: {sql}")
 
     def _delete(self, wanted):
@@ -84,7 +106,7 @@ class FakeConn:
 
 class FakePool:
     def __init__(self):
-        self.store = {"rows": {}, "inserts": []}
+        self.store = {"rows": {}, "inserts": [], "documents": {}, "record_writes": 0}
 
     @asynccontextmanager
     async def connection(self):

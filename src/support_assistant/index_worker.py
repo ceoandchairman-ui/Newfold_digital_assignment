@@ -26,8 +26,6 @@ from enum import StrEnum
 import structlog
 
 from support_assistant.config import get_settings
-from support_assistant.registry import build_registry
-from support_assistant.releases import ReleaseGate, search_release
 
 log = structlog.get_logger()
 
@@ -92,22 +90,17 @@ async def run() -> None:
     from support_assistant.docsource import StoreDocumentSource
     from support_assistant.embeddings import azure_embedder
     from support_assistant.embeddings_lc import LcEmbeddings
-    from support_assistant.indexer import exclusive_index_run, index_source
+    from support_assistant.indexer import exclusive_index_run, index_source, indexing_fingerprint
 
     s = get_settings()
     if not s.docs_storage_account:
         raise RuntimeError("DOCS_STORAGE_ACCOUNT is required")
     embedder = azure_embedder(s)
     store = AzureBlobStore(s.docs_storage_account, s.docs_container)
-    registry = build_registry(s)
-    release = search_release(s)
-    gate = ReleaseGate(registry, release)
     pool = make_pool(s)
     await pool.open()
 
     async def reindex() -> bool:
-        if not await gate.check():
-            return False  # settings not verified: look again at the next tick
         async with exclusive_index_run(pool) as got:
             if not got:
                 return False
@@ -117,8 +110,7 @@ async def run() -> None:
                 StoreDocumentSource(store),
                 s.embedding_model,
                 s.embedding_version,
-                registry=registry,
-                fingerprint=release.version,
+                fingerprint=indexing_fingerprint(s),
             )
         log.info(
             "knowledge_base_indexed",
@@ -128,8 +120,7 @@ async def run() -> None:
             documents_removed=report.sources_removed,
             skipped=len(report.skipped),
         )
-        # Records that could not be written are repaired by running again at the next tick.
-        return report.registry_errors == 0
+        return True
 
     watcher = Watcher(store.etags, reindex, settle_polls=s.index_settle_polls)
     log.info("index_worker_started", poll_seconds=s.index_poll_seconds)

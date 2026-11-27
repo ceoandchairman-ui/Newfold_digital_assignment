@@ -25,6 +25,11 @@ resource "azurerm_kubernetes_cluster" "main" {
     min_count            = var.aks_min_nodes
     max_count            = var.aks_max_nodes
     os_disk_type         = "Managed"
+
+    # Azure's default; undeclared, every later plan would try to remove it
+    upgrade_settings {
+      max_surge = "10%"
+    }
   }
 
   identity {

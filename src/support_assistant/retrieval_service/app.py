@@ -39,8 +39,6 @@ from support_assistant.logs import (
     header_value,
 )
 from support_assistant.observability import RequestContextMiddleware
-from support_assistant.registry import build_registry
-from support_assistant.releases import ReleaseGate, search_release
 from support_assistant.reranker import HttpReranker
 from support_assistant.security import BodyLimitMiddleware
 from support_assistant.services.retrieval import Chunk, fetch_kb, search_kb
@@ -69,11 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.pool, app.state.embedder, app.state.reranker = pool, embedder, reranker
     app.state.settings = settings
-    registry = build_registry(settings)
-    app.state.release_gate = ReleaseGate(registry, search_release(settings))
     yield
-    if registry is not None:
-        await registry.aclose()
     await embedder.aclose()
     if reranker is not None:
         await reranker.aclose()
@@ -111,10 +105,6 @@ async def readyz() -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001 - any database problem means not ready
         log.error("not_ready", dependency="postgres", **error_fields(exc))
         raise HTTPException(503, detail="knowledge store unavailable") from None
-    # A pod whose embedding settings were never published would search with the wrong vectors.
-    gate: ReleaseGate | None = getattr(app.state, "release_gate", None)
-    if gate is not None and not await gate.check():
-        raise HTTPException(503, detail="search settings not verified")
     return {"status": "ready"}
 
 

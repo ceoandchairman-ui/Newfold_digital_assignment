@@ -45,9 +45,13 @@ GRANTS: dict[str, list[tuple[str, list[str]]]] = {
         ("SELECT, INSERT, UPDATE, DELETE", ["customer_uploads"]),
     ],
     # Mirrors the team's documents into the knowledge base: add new chunks, remove stale ones.
-    "indexer": [("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks"])],
+    "indexer": [
+        ("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks", "knowledge_documents"])
+    ],
     # Same job, run continuously: indexes a document soon after the team uploads it.
-    "index-worker": [("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks"])],
+    "index-worker": [
+        ("SELECT, INSERT, UPDATE, DELETE", ["knowledge_base_chunks", "knowledge_documents"])
+    ],
     # Answer-time search and reranking: the only service that reads the knowledge base to answer.
     "retrieval": [("SELECT", ["knowledge_base_chunks"])],
     # The audit trail.
